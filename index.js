@@ -13,6 +13,7 @@ const PORT = process.env.PORT || 6000;
 // credentials: true is required so the browser sends/receives HttpOnly cookies.
 const allowedOrigins = [
     process.env.FRONTEND_URL,
+    "https://keeper-sport-frontend.vercel.app",
     "http://localhost:5173",
     "http://localhost:3000"
 ].filter(Boolean);
@@ -55,7 +56,7 @@ app.use("/api", apiRoutes);
 app.use(errorHandler);
 
 // ── Listen (skipped on Vercel serverless) ─────────────────────────────────────
-if (process.env.NODE_ENV !== "production" || !process.env.VERCEL) {
+if (!process.env.VERCEL) {
     app.listen(PORT, () => {
         console.log(`Keeper Sports backend running on port ${PORT}`);
     });
