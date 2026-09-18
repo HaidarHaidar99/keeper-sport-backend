@@ -43,7 +43,7 @@ INSERT INTO admins (
     is_active
 ) VALUES (
     'admin@keepersports.com',
-    '$2a$10$wT4O7dE.i0fA9x4.0H.xueO2y77K67nL/YwHqUuE2qZ3y9mB7Hj.W',
+    '$2b$10$wBEPkvdrECVVUSCkvtwqY.Cq.QXPJi1XiVorxaTGe7/5ipE3PaYme',
     'super_admin',
     true
 ) ON CONFLICT (email) DO NOTHING;
