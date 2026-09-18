@@ -7,6 +7,14 @@ const { validateRequired, validateEmail } = require("../middleware/validationMid
 // All admin routes require valid admin authentication
 router.use(authenticateAdmin);
 
+// Admin Profile Verification
+router.get("/me", (req, res) => {
+    res.json({
+        success: true,
+        admin: req.admin
+    });
+});
+
 // Dashboard Overview
 router.get("/dashboard", adminController.getDashboardStats);
 
