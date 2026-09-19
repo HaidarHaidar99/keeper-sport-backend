@@ -136,7 +136,185 @@ const getProductById = async (id) => {
     };
 };
 
+// ── Admin: Create Product with Variants and Images ───────────────────────────
+const createProduct = async (productData) => {
+    const {
+        name_en,
+        name_ar,
+        description_en,
+        description_ar,
+        category_id,
+        base_price,
+        is_sale_enabled = false,
+        sale_price = null,
+        is_featured = false,
+        is_active = true,
+        variants = [],
+        images = []
+    } = productData;
+
+    if (!name_en || !name_ar || base_price === undefined || base_price === null) {
+        const err = new Error("Product name (EN/AR) and base price are required");
+        err.statusCode = 400;
+        throw err;
+    }
+
+    // 1. Insert product record
+    const { data: product, error: prodErr } = await supabase
+        .from("products")
+        .insert([{
+            name_en: name_en.trim(),
+            name_ar: name_ar.trim(),
+            description_en: description_en || null,
+            description_ar: description_ar || null,
+            category_id: category_id || null,
+            base_price: parseFloat(base_price),
+            is_sale_enabled: Boolean(is_sale_enabled),
+            sale_price: is_sale_enabled && sale_price !== null && !isNaN(sale_price) ? parseFloat(sale_price) : null,
+            is_featured: Boolean(is_featured),
+            is_active: Boolean(is_active)
+        }])
+        .select()
+        .single();
+
+    if (prodErr || !product) {
+        const err = new Error("Failed to create product: " + (prodErr?.message || "Unknown error"));
+        err.statusCode = 400;
+        throw err;
+    }
+
+    // 2. Insert variants if provided
+    if (Array.isArray(variants) && variants.length > 0) {
+        const variantsPayload = variants.map((v) => ({
+            product_id: product.id,
+            size: v.size ? v.size.trim() : null,
+            price: v.price !== undefined && v.price !== null && !isNaN(v.price) ? parseFloat(v.price) : null,
+            track_quantity: v.track_quantity !== undefined ? Boolean(v.track_quantity) : true,
+            physical_stock: Math.max(0, parseInt(v.physical_stock, 10) || 0)
+        }));
+
+        const { error: varErr } = await supabase
+            .from("product_variants")
+            .insert(variantsPayload);
+
+        if (varErr) {
+            console.error("Warning: Failed to insert product variants:", varErr);
+        }
+    }
+
+    // 3. Insert images if provided (max 3 images)
+    if (Array.isArray(images) && images.length > 0) {
+        const imagesPayload = images.slice(0, 3).map((img, idx) => ({
+            product_id: product.id,
+            image_url: typeof img === 'string' ? img : img.image_url,
+            display_order: idx + 1
+        }));
+
+        const { error: imgErr } = await supabase
+            .from("product_images")
+            .insert(imagesPayload);
+
+        if (imgErr) {
+            console.error("Warning: Failed to insert product images:", imgErr);
+        }
+    }
+
+    return getProductById(product.id);
+};
+
+// ── Admin: Update Product, Variants & Images ─────────────────────────────────
+const updateProduct = async (id, updateData) => {
+    const {
+        name_en,
+        name_ar,
+        description_en,
+        description_ar,
+        category_id,
+        base_price,
+        is_sale_enabled,
+        sale_price,
+        is_featured,
+        is_active,
+        variants,
+        images
+    } = updateData;
+
+    const fieldsToUpdate = { updated_at: new Date().toISOString() };
+    if (name_en !== undefined) fieldsToUpdate.name_en = name_en.trim();
+    if (name_ar !== undefined) fieldsToUpdate.name_ar = name_ar.trim();
+    if (description_en !== undefined) fieldsToUpdate.description_en = description_en;
+    if (description_ar !== undefined) fieldsToUpdate.description_ar = description_ar;
+    if (category_id !== undefined) fieldsToUpdate.category_id = category_id || null;
+    if (base_price !== undefined) fieldsToUpdate.base_price = parseFloat(base_price);
+    if (is_sale_enabled !== undefined) fieldsToUpdate.is_sale_enabled = Boolean(is_sale_enabled);
+    if (sale_price !== undefined) {
+        fieldsToUpdate.sale_price = (is_sale_enabled && sale_price !== null && !isNaN(sale_price)) ? parseFloat(sale_price) : null;
+    }
+    if (is_featured !== undefined) fieldsToUpdate.is_featured = Boolean(is_featured);
+    if (is_active !== undefined) fieldsToUpdate.is_active = Boolean(is_active);
+
+    const { error: prodErr } = await supabase
+        .from("products")
+        .update(fieldsToUpdate)
+        .eq("id", id);
+
+    if (prodErr) {
+        const err = new Error("Failed to update product: " + prodErr.message);
+        err.statusCode = 400;
+        throw err;
+    }
+
+    // Replace variants if array provided
+    if (Array.isArray(variants)) {
+        await supabase.from("product_variants").delete().eq("product_id", id);
+        if (variants.length > 0) {
+            const variantsPayload = variants.map((v) => ({
+                product_id: id,
+                size: v.size ? v.size.trim() : null,
+                price: v.price !== undefined && v.price !== null && !isNaN(v.price) ? parseFloat(v.price) : null,
+                track_quantity: v.track_quantity !== undefined ? Boolean(v.track_quantity) : true,
+                physical_stock: Math.max(0, parseInt(v.physical_stock, 10) || 0)
+            }));
+            await supabase.from("product_variants").insert(variantsPayload);
+        }
+    }
+
+    // Replace images if array provided
+    if (Array.isArray(images)) {
+        await supabase.from("product_images").delete().eq("product_id", id);
+        if (images.length > 0) {
+            const imagesPayload = images.slice(0, 3).map((img, idx) => ({
+                product_id: id,
+                image_url: typeof img === 'string' ? img : img.image_url,
+                display_order: idx + 1
+            }));
+            await supabase.from("product_images").insert(imagesPayload);
+        }
+    }
+
+    return getProductById(id);
+};
+
+// ── Admin: Soft-delete / Deactivate Product ──────────────────────────────────
+const deleteProduct = async (id) => {
+    const { error } = await supabase
+        .from("products")
+        .update({ is_active: false, updated_at: new Date().toISOString() })
+        .eq("id", id);
+
+    if (error) {
+        const err = new Error("Failed to deactivate product");
+        err.details = error.message;
+        throw err;
+    }
+
+    return { id, is_active: false };
+};
+
 module.exports = {
     getProducts,
-    getProductById
+    getProductById,
+    createProduct,
+    updateProduct,
+    deleteProduct
 };
