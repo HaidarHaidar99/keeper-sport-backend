@@ -241,7 +241,8 @@ const googleAuth = async (req, res) => {
 
     let payload;
     try {
-      const ticket = await googleClient.verifyIdToken({
+      const client = new OAuth2Client(clientId);
+      const ticket = await client.verifyIdToken({
         idToken: googleToken,
         audience: clientId
       });
