@@ -8,9 +8,11 @@ const authRoutes = require("./routes/authRoutes");
 const app = express();
 const PORT = process.env.PORT || 6000;
 
-// Production CORS: Allow frontend vercel deployment and any subdomains
+// Production CORS: Allow frontend custom domain (keepersportlb.com), vercel deployment, and local dev
 const allowedOrigins = [
   process.env.FRONTEND_URL,
+  "https://keepersportlb.com",
+  "https://www.keepersportlb.com",
   "https://keeper-sport-frontend.vercel.app",
   "http://localhost:5173",
   "http://localhost:3000"
@@ -23,6 +25,9 @@ app.use(
       if (!origin) return callback(null, true);
       if (
         allowedOrigins.includes(origin) ||
+        origin === "https://keepersportlb.com" ||
+        origin === "https://www.keepersportlb.com" ||
+        origin.endsWith(".keepersportlb.com") ||
         origin.endsWith(".vercel.app") ||
         process.env.NODE_ENV !== "production"
       ) {
