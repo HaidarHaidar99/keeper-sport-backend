@@ -1,11 +1,12 @@
+const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { OAuth2Client } = require("google-auth-library");
 const supabase = require("../config/supabase");
 const { COOKIE_NAME, getCookieOptions, sanitizeUser } = require("../middleware/authMiddleware");
+const { sendVerificationEmail, sendPasswordResetEmail } = require("../utils/emailService");
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
 
 /**
  * Local registration
@@ -59,7 +60,7 @@ const register = async (req, res) => {
       });
     }
 
-    if (password !== finalConfirmPassword) {
+    if (!finalConfirmPassword || password !== finalConfirmPassword) {
       return res.status(400).json({
         success: false,
         message: "Passwords do not match."
@@ -68,15 +69,15 @@ const register = async (req, res) => {
 
     const normalizedEmail = email.trim().toLowerCase();
 
-    // 2. Duplicate email check
-    const { data: existingUser, error: checkError } = await supabase
+    // 2. Check if user already exists
+    const { data: existingUser, error: findError } = await supabase
       .from("users")
-      .select("id")
+      .select("id, email, auth_provider")
       .eq("email", normalizedEmail)
       .maybeSingle();
 
-    if (checkError) {
-      console.error("Database error checking existing user:", checkError);
+    if (findError) {
+      console.error("Database error checking existing user:", findError);
       return res.status(500).json({
         success: false,
         message: "Database check failed. Please try again."
@@ -94,7 +95,12 @@ const register = async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const password_hash = await bcrypt.hash(password, salt);
 
-    // 4. Create local user
+    // 4. Generate secure email verification token
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24 hours
+
+    // 5. Create local unverified user
     const { data: newUser, error: insertError } = await supabase
       .from("users")
       .insert({
@@ -104,7 +110,9 @@ const register = async (req, res) => {
         role: "user",
         auth_provider: "local",
         google_id: null,
-        is_verified: false
+        is_verified: false,
+        verification_token_hash: tokenHash,
+        verification_token_expires_at: expiresAt
       })
       .select("id, full_name, email, role, auth_provider, is_verified, created_at, updated_at")
       .single();
@@ -117,9 +125,16 @@ const register = async (req, res) => {
       });
     }
 
+    // 6. Send verification email through Resend (non-blocking failure safe)
+    await sendVerificationEmail({
+      email: normalizedEmail,
+      fullName: full_name.trim(),
+      rawToken
+    });
+
     return res.status(201).json({
       success: true,
-      message: "Account created successfully. Please verify your email before logging in.",
+      message: "Account created successfully. We have sent a verification link to your email.",
       user: sanitizeUser(newUser)
     });
   } catch (err) {
@@ -184,6 +199,8 @@ const login = async (req, res) => {
     if (!user.is_verified) {
       return res.status(403).json({
         success: false,
+        requires_verification: true,
+        email: user.email,
         message: "Please verify your email address before signing in."
       });
     }
@@ -201,7 +218,7 @@ const login = async (req, res) => {
 
     return res.json({
       success: true,
-      message: "Signed in successfully.",
+      message: "Logged in successfully.",
       token,
       user: sanitizeUser(user)
     });
@@ -210,6 +227,439 @@ const login = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "An unexpected error occurred during login."
+    });
+  }
+};
+
+/**
+ * Email Verification
+ * POST /api/auth/verify-email
+ */
+const verifyEmail = async (req, res) => {
+  try {
+    const { token } = req.body;
+
+    if (!token || typeof token !== "string" || token.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Verification token is required."
+      });
+    }
+
+    const tokenHash = crypto.createHash("sha256").update(token.trim()).digest("hex");
+
+    const { data: user, error } = await supabase
+      .from("users")
+      .select("id, email, full_name, is_verified, verification_token_expires_at")
+      .eq("verification_token_hash", tokenHash)
+      .maybeSingle();
+
+    if (error) {
+      console.error("Database error during email verification:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Database error verifying email."
+      });
+    }
+
+    if (!user) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid or already used verification link. Please request a new one."
+      });
+    }
+
+    if (user.is_verified) {
+      return res.json({
+        success: true,
+        message: "Your email is already verified. You can sign in now."
+      });
+    }
+
+    if (user.verification_token_expires_at && new Date(user.verification_token_expires_at) < new Date()) {
+      return res.status(400).json({
+        success: false,
+        expired: true,
+        email: user.email,
+        message: "This verification link has expired. Please request a new one."
+      });
+    }
+
+    // Mark as verified and invalidate token
+    const { error: updateError } = await supabase
+      .from("users")
+      .update({
+        is_verified: true,
+        verification_token_hash: null,
+        verification_token_expires_at: null,
+        updated_at: new Date().toISOString()
+      })
+      .eq("id", user.id);
+
+    if (updateError) {
+      console.error("Database error updating user verification status:", updateError);
+      return res.status(500).json({
+        success: false,
+        message: "Could not complete email verification. Please try again."
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: "Email verified successfully! You can now sign in to your account."
+    });
+  } catch (err) {
+    console.error("Verify email error:", err);
+    return res.status(500).json({
+      success: false,
+      message: "An unexpected error occurred during email verification."
+    });
+  }
+};
+
+/**
+ * Resend Verification Email
+ * POST /api/auth/resend-verification
+ */
+const resendVerification = async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email || typeof email !== "string" || !EMAIL_REGEX.test(email.trim())) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid email address is required."
+      });
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+
+    const { data: user, error } = await supabase
+      .from("users")
+      .select("id, email, full_name, is_verified, auth_provider, verification_token_expires_at")
+      .eq("email", normalizedEmail)
+      .maybeSingle();
+
+    if (error) {
+      console.error("Database error finding user for resend verification:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Database check failed."
+      });
+    }
+
+    // Generic safe response if user not found or google provider
+    if (!user || user.auth_provider !== "local") {
+      return res.json({
+        success: true,
+        message: "If an unverified account exists for this email, a verification link has been sent."
+      });
+    }
+
+    if (user.is_verified) {
+      return res.json({
+        success: true,
+        already_verified: true,
+        message: "This email is already verified. You can sign in directly."
+      });
+    }
+
+    // Cooldown rate limit: prevent duplicate spam within 60 seconds
+    if (user.verification_token_expires_at) {
+      const remainingMs = new Date(user.verification_token_expires_at).getTime() - Date.now();
+      const elapsedMs = 24 * 60 * 60 * 1000 - remainingMs;
+      if (elapsedMs > 0 && elapsedMs < 60 * 1000) {
+        return res.status(429).json({
+          success: false,
+          message: "Please wait at least 60 seconds before requesting another verification email."
+        });
+      }
+    }
+
+    // Generate new token
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+
+    await supabase
+      .from("users")
+      .update({
+        verification_token_hash: tokenHash,
+        verification_token_expires_at: expiresAt,
+        updated_at: new Date().toISOString()
+      })
+      .eq("id", user.id);
+
+    await sendVerificationEmail({
+      email: user.email,
+      fullName: user.full_name,
+      rawToken
+    });
+
+    return res.json({
+      success: true,
+      message: "A new verification email has been sent. Please check your inbox."
+    });
+  } catch (err) {
+    console.error("Resend verification error:", err);
+    return res.status(500).json({
+      success: false,
+      message: "An unexpected error occurred while resending verification email."
+    });
+  }
+};
+
+/**
+ * Request Password Reset
+ * POST /api/auth/forgot-password
+ */
+const forgotPassword = async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email || typeof email !== "string" || !EMAIL_REGEX.test(email.trim())) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid email address is required."
+      });
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+
+    const { data: user, error } = await supabase
+      .from("users")
+      .select("id, email, full_name, auth_provider, password_reset_token_expires_at")
+      .eq("email", normalizedEmail)
+      .maybeSingle();
+
+    if (error) {
+      console.error("Database error looking up user for password reset:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Database check failed."
+      });
+    }
+
+    // Security: Do not expose if account exists
+    const genericSuccess = {
+      success: true,
+      message: "If an account exists for this email, a password reset link has been sent."
+    };
+
+    if (!user || user.auth_provider !== "local") {
+      return res.json(genericSuccess);
+    }
+
+    // Rate limiting cooldown: 60s
+    if (user.password_reset_token_expires_at) {
+      const remainingMs = new Date(user.password_reset_token_expires_at).getTime() - Date.now();
+      const elapsedMs = 60 * 60 * 1000 - remainingMs;
+      if (elapsedMs > 0 && elapsedMs < 60 * 1000) {
+        return res.json(genericSuccess);
+      }
+    }
+
+    // Generate secure reset token
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1 hour
+
+    await supabase
+      .from("users")
+      .update({
+        password_reset_token_hash: tokenHash,
+        password_reset_token_expires_at: expiresAt,
+        updated_at: new Date().toISOString()
+      })
+      .eq("id", user.id);
+
+    await sendPasswordResetEmail({
+      email: user.email,
+      fullName: user.full_name,
+      rawToken
+    });
+
+    return res.json(genericSuccess);
+  } catch (err) {
+    console.error("Forgot password error:", err);
+    return res.status(500).json({
+      success: false,
+      message: "An unexpected error occurred while requesting password reset."
+    });
+  }
+};
+
+/**
+ * Verify Password Reset Token (Pre-validation)
+ * GET /api/auth/verify-reset-token
+ */
+const verifyResetToken = async (req, res) => {
+  try {
+    const { token } = req.query;
+
+    if (!token || typeof token !== "string" || token.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        valid: false,
+        message: "Reset token is required."
+      });
+    }
+
+    const tokenHash = crypto.createHash("sha256").update(token.trim()).digest("hex");
+
+    const { data: user, error } = await supabase
+      .from("users")
+      .select("id, email, password_reset_token_expires_at")
+      .eq("password_reset_token_hash", tokenHash)
+      .maybeSingle();
+
+    if (error) {
+      console.error("Database error checking reset token:", error);
+      return res.status(500).json({
+        success: false,
+        valid: false,
+        message: "Database error checking token."
+      });
+    }
+
+    if (!user) {
+      return res.status(400).json({
+        success: false,
+        valid: false,
+        message: "Invalid or already used password reset link."
+      });
+    }
+
+    if (user.password_reset_token_expires_at && new Date(user.password_reset_token_expires_at) < new Date()) {
+      return res.status(400).json({
+        success: false,
+        valid: false,
+        expired: true,
+        message: "Password reset link has expired. Please request a new one."
+      });
+    }
+
+    return res.json({
+      success: true,
+      valid: true,
+      message: "Token is valid."
+    });
+  } catch (err) {
+    console.error("Verify reset token error:", err);
+    return res.status(500).json({
+      success: false,
+      valid: false,
+      message: "Unexpected error validating reset token."
+    });
+  }
+};
+
+/**
+ * Reset Password
+ * POST /api/auth/reset-password
+ */
+const resetPassword = async (req, res) => {
+  try {
+    const { token, password, confirm_password, confirmPassword } = req.body;
+    const finalConfirmPassword = confirm_password !== undefined ? confirm_password : confirmPassword;
+
+    if (!token || typeof token !== "string" || token.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Password reset token is required."
+      });
+    }
+
+    if (!password || typeof password !== "string") {
+      return res.status(400).json({
+        success: false,
+        message: "Password is required."
+      });
+    }
+
+    if (password.length < 8) {
+      return res.status(400).json({
+        success: false,
+        message: "Password must be at least 8 characters long."
+      });
+    }
+
+    if (password.length > 128) {
+      return res.status(400).json({
+        success: false,
+        message: "Password cannot exceed 128 characters."
+      });
+    }
+
+    if (!finalConfirmPassword || password !== finalConfirmPassword) {
+      return res.status(400).json({
+        success: false,
+        message: "Passwords do not match."
+      });
+    }
+
+    const tokenHash = crypto.createHash("sha256").update(token.trim()).digest("hex");
+
+    const { data: user, error } = await supabase
+      .from("users")
+      .select("id, email, password_reset_token_expires_at")
+      .eq("password_reset_token_hash", tokenHash)
+      .maybeSingle();
+
+    if (error) {
+      console.error("Database error looking up user for reset password:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Database check failed."
+      });
+    }
+
+    if (!user) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid or already used password reset link."
+      });
+    }
+
+    if (user.password_reset_token_expires_at && new Date(user.password_reset_token_expires_at) < new Date()) {
+      return res.status(400).json({
+        success: false,
+        message: "Password reset link has expired. Please request a new one."
+      });
+    }
+
+    // Hash new password securely
+    const salt = await bcrypt.genSalt(10);
+    const new_password_hash = await bcrypt.hash(password, salt);
+
+    // Invalidate reset token and update password
+    const { error: updateError } = await supabase
+      .from("users")
+      .update({
+        password_hash: new_password_hash,
+        password_reset_token_hash: null,
+        password_reset_token_expires_at: null,
+        updated_at: new Date().toISOString()
+      })
+      .eq("id", user.id);
+
+    if (updateError) {
+      console.error("Database error updating password:", updateError);
+      return res.status(500).json({
+        success: false,
+        message: "Could not update password. Please try again."
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: "Password changed successfully."
+    });
+  } catch (err) {
+    console.error("Reset password error:", err);
+    return res.status(500).json({
+      success: false,
+      message: "An unexpected error occurred while resetting password."
     });
   }
 };
@@ -375,6 +825,11 @@ const getMe = async (req, res) => {
 module.exports = {
   register,
   login,
+  verifyEmail,
+  resendVerification,
+  forgotPassword,
+  verifyResetToken,
+  resetPassword,
   googleAuth,
   logout,
   getMe
