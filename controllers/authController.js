@@ -6,7 +6,6 @@ const { COOKIE_NAME, getCookieOptions, sanitizeUser } = require("../middleware/a
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 /**
  * Local registration
@@ -231,11 +230,15 @@ const googleAuth = async (req, res) => {
       });
     }
 
-    const clientId = process.env.GOOGLE_CLIENT_ID;
+    const clientId = (process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || "").trim();
     if (!clientId) {
       return res.status(500).json({
         success: false,
-        message: "Server configuration missing GOOGLE_CLIENT_ID."
+        message: "Server configuration missing GOOGLE_CLIENT_ID.",
+        debug: {
+          has_GOOGLE_CLIENT_ID: Boolean(process.env.GOOGLE_CLIENT_ID),
+          has_VITE_GOOGLE_CLIENT_ID: Boolean(process.env.VITE_GOOGLE_CLIENT_ID)
+        }
       });
     }
 
