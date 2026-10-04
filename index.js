@@ -1,65 +1,42 @@
 require("dotenv").config();
+const express = require("express");
+const cors = require("cors");
+const supabase = require("./config/supabase");
 
-const express    = require("express");
-const cors       = require("cors");
-const cookieParser = require("cookie-parser");
-const apiRoutes  = require("./routes");
-const errorHandler = require("./middleware/errorHandler");
-
-const app  = express();
+const app = express();
 const PORT = process.env.PORT || 6000;
 
-// ── CORS ─────────────────────────────────────────────────────────────────────
-// credentials: true is required so the browser sends/receives HttpOnly cookies.
-const allowedOrigins = [
-    process.env.FRONTEND_URL,
-    "https://keeper-sport-frontend.vercel.app",
-    "http://localhost:5173",
-    "http://localhost:3000"
-].filter(Boolean);
-
-app.use(cors({
-    origin: (origin, callback) => {
-        // Allow server-to-server / curl / Postman (no Origin header)
-        if (!origin) return callback(null, true);
-
-        if (allowedOrigins.includes(origin)) return callback(null, true);
-
-        // In production, reject unlisted origins
-        if (process.env.NODE_ENV === "production") {
-            return callback(new Error(`CORS: origin ${origin} is not allowed`), false);
-        }
-
-        // Allow all origins in development
-        return callback(null, true);
-    },
-    credentials: true  // Required for HttpOnly cookie to be sent cross-origin
-}));
-
-// ── Body & Cookie parsers ─────────────────────────────────────────────────────
+app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
-app.use(cookieParser());   // Makes req.cookies available for JWT extraction
 
-// ── Health check ─────────────────────────────────────────────────────────────
+// Base Health Check
 app.get("/", (req, res) => {
-    res.json({
-        success: true,
-        message: "Keeper Sports backend API is running",
-        version: "2.0.0"
-    });
+  res.json({
+    success: true,
+    message: "Keeper Sports Clean Backend is Ready",
+    timestamp: new Date().toISOString()
+  });
 });
 
-// ── Routes ────────────────────────────────────────────────────────────────────
-app.use("/api", apiRoutes);
-
-// ── Centralised error handler ─────────────────────────────────────────────────
-app.use(errorHandler);
-
-// ── Listen (skipped on Vercel serverless) ─────────────────────────────────────
-if (!process.env.VERCEL) {
-    app.listen(PORT, () => {
-        console.log(`Keeper Sports backend running on port ${PORT}`);
+// Database Connectivity Check
+app.get("/api/health", async (req, res) => {
+  try {
+    // Quick probe to verify Supabase credentials and connection
+    const { error } = await supabase.from("_probe").select("*").limit(1);
+    // 42P01 (relation does not exist) is normal because DB is empty, but proves connection works!
+    const isConnected = !error || error.code === "42P01";
+    res.json({
+      success: true,
+      database: isConnected ? "connected" : "error",
+      details: isConnected ? "Supabase connection verified (Clean Schema)" : error.message
     });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => console.log(`Clean backend running on port ${PORT}`));
 }
 
 module.exports = app;
