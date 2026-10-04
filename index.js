@@ -4,6 +4,7 @@ const cors = require("cors");
 const cookieParser = require("cookie-parser");
 const supabase = require("./config/supabase");
 const authRoutes = require("./routes/authRoutes");
+const contentRoutes = require("./routes/contentRoutes");
 
 const app = express();
 const PORT = process.env.PORT || 6000;
@@ -71,8 +72,9 @@ app.get("/api/health", async (req, res) => {
   }
 });
 
-// Mount Authentication Routes
+// Mount Routes
 app.use("/api/auth", authRoutes);
+app.use("/api", contentRoutes);
 
 // Catch-all 404: ALWAYS return JSON, NEVER return HTML
 app.use((req, res) => {

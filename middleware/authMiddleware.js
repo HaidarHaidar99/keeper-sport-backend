@@ -80,9 +80,49 @@ const requireAuth = async (req, res, next) => {
   }
 };
 
+const optionalAuth = async (req, res, next) => {
+  try {
+    let token = req.cookies?.[COOKIE_NAME];
+
+    if (!token && req.headers.authorization) {
+      const parts = req.headers.authorization.split(" ");
+      if (parts.length === 2 && parts[0].toLowerCase() === "bearer") {
+        token = parts[1];
+      }
+    }
+
+    if (!token) {
+      req.user = null;
+      return next();
+    }
+
+    const secret = process.env.JWT_SECRET || "keeper-sports-dev-jwt-secret-replace-in-production";
+    let decoded;
+    try {
+      decoded = jwt.verify(token, secret);
+    } catch {
+      req.user = null;
+      return next();
+    }
+
+    const { data: user } = await supabase
+      .from("users")
+      .select("id, full_name, email, role, auth_provider, is_verified, created_at, updated_at")
+      .eq("id", decoded.id)
+      .maybeSingle();
+
+    req.user = user || null;
+    next();
+  } catch {
+    req.user = null;
+    next();
+  }
+};
+
 module.exports = {
   COOKIE_NAME,
   getCookieOptions,
   sanitizeUser,
-  requireAuth
+  requireAuth,
+  optionalAuth
 };
