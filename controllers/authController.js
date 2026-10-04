@@ -234,11 +234,7 @@ const googleAuth = async (req, res) => {
     if (!clientId) {
       return res.status(500).json({
         success: false,
-        message: "Server configuration missing GOOGLE_CLIENT_ID.",
-        debug: {
-          has_GOOGLE_CLIENT_ID: Boolean(process.env.GOOGLE_CLIENT_ID),
-          has_VITE_GOOGLE_CLIENT_ID: Boolean(process.env.VITE_GOOGLE_CLIENT_ID)
-        }
+        message: "Server configuration missing GOOGLE_CLIENT_ID."
       });
     }
 
