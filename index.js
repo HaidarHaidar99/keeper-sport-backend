@@ -5,6 +5,9 @@ const cookieParser = require("cookie-parser");
 const supabase = require("./config/supabase");
 const authRoutes = require("./routes/authRoutes");
 const contentRoutes = require("./routes/contentRoutes");
+const productRoutes = require("./routes/productRoutes");
+const favoriteRoutes = require("./routes/favoriteRoutes");
+const cartRoutes = require("./routes/cartRoutes");
 
 const app = express();
 const PORT = process.env.PORT || 6000;
@@ -74,6 +77,9 @@ app.get("/api/health", async (req, res) => {
 
 // Mount Routes
 app.use("/api/auth", authRoutes);
+app.use("/api/products", productRoutes);
+app.use("/api/favorites", favoriteRoutes);
+app.use("/api/cart", cartRoutes);
 app.use("/api", contentRoutes);
 
 // Catch-all 404: ALWAYS return JSON, NEVER return HTML
