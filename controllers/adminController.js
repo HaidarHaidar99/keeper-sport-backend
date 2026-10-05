@@ -232,32 +232,40 @@ const createHeroSlide = async (req, res) => {
       is_active = true
     } = req.body;
 
-    if (!media_path) {
+    if (!media_path || !media_path.trim()) {
       return res.status(400).json({ success: false, message: "Media path/URL is required." });
     }
+
+    const safeMediaType = media_type === "video" ? "video" : "image";
+    const safeDuration = Math.max(1, parseInt(duration_seconds, 10) || 5);
+    const safeSortOrder = Math.max(0, parseInt(sort_order, 10) || 0);
 
     const { data, error } = await supabase
       .from("hero_slides")
       .insert({
-        title: title || null,
-        subtitle: subtitle || null,
-        media_type,
-        media_path,
-        fallback_image_path: fallback_image_path || null,
-        primary_button_text: primary_button_text || null,
-        primary_button_route: primary_button_route || null,
-        secondary_button_text: secondary_button_text || null,
-        secondary_button_route: secondary_button_route || null,
-        duration_seconds: parseInt(duration_seconds, 10) || 5,
-        sort_order: parseInt(sort_order, 10) || 0,
+        title: title ? title.trim() : null,
+        subtitle: subtitle ? subtitle.trim() : null,
+        media_type: safeMediaType,
+        media_path: media_path.trim(),
+        fallback_image_path: fallback_image_path ? fallback_image_path.trim() : null,
+        primary_button_text: primary_button_text ? primary_button_text.trim() : null,
+        primary_button_route: primary_button_route ? primary_button_route.trim() : null,
+        secondary_button_text: secondary_button_text ? secondary_button_text.trim() : null,
+        secondary_button_route: secondary_button_route ? secondary_button_route.trim() : null,
+        duration_seconds: safeDuration,
+        sort_order: safeSortOrder,
         is_active: Boolean(is_active)
       })
       .select("*")
       .single();
 
-    if (error) throw error;
+    if (error) {
+      console.error("createHeroSlide error:", error);
+      return res.status(500).json({ success: false, message: error.message });
+    }
     return res.json({ success: true, slide: data, message: "Hero slide created successfully." });
   } catch (err) {
+    console.error("createHeroSlide catch error:", err);
     return res.status(500).json({ success: false, message: err.message });
   }
 };
@@ -284,17 +292,17 @@ const updateHeroSlide = async (req, res) => {
     } = req.body;
 
     const updates = {};
-    if (title !== undefined) updates.title = title;
-    if (subtitle !== undefined) updates.subtitle = subtitle;
-    if (media_type !== undefined) updates.media_type = media_type;
-    if (media_path !== undefined) updates.media_path = media_path;
-    if (fallback_image_path !== undefined) updates.fallback_image_path = fallback_image_path;
-    if (primary_button_text !== undefined) updates.primary_button_text = primary_button_text;
-    if (primary_button_route !== undefined) updates.primary_button_route = primary_button_route;
-    if (secondary_button_text !== undefined) updates.secondary_button_text = secondary_button_text;
-    if (secondary_button_route !== undefined) updates.secondary_button_route = secondary_button_route;
-    if (duration_seconds !== undefined) updates.duration_seconds = parseInt(duration_seconds, 10) || 5;
-    if (sort_order !== undefined) updates.sort_order = parseInt(sort_order, 10) || 0;
+    if (title !== undefined) updates.title = title ? title.trim() : null;
+    if (subtitle !== undefined) updates.subtitle = subtitle ? subtitle.trim() : null;
+    if (media_type !== undefined) updates.media_type = media_type === "video" ? "video" : "image";
+    if (media_path !== undefined) updates.media_path = media_path ? media_path.trim() : null;
+    if (fallback_image_path !== undefined) updates.fallback_image_path = fallback_image_path ? fallback_image_path.trim() : null;
+    if (primary_button_text !== undefined) updates.primary_button_text = primary_button_text ? primary_button_text.trim() : null;
+    if (primary_button_route !== undefined) updates.primary_button_route = primary_button_route ? primary_button_route.trim() : null;
+    if (secondary_button_text !== undefined) updates.secondary_button_text = secondary_button_text ? secondary_button_text.trim() : null;
+    if (secondary_button_route !== undefined) updates.secondary_button_route = secondary_button_route ? secondary_button_route.trim() : null;
+    if (duration_seconds !== undefined) updates.duration_seconds = Math.max(1, parseInt(duration_seconds, 10) || 5);
+    if (sort_order !== undefined) updates.sort_order = Math.max(0, parseInt(sort_order, 10) || 0);
     if (is_active !== undefined) updates.is_active = Boolean(is_active);
 
     const { data, error } = await supabase
@@ -304,9 +312,13 @@ const updateHeroSlide = async (req, res) => {
       .select("*")
       .single();
 
-    if (error) throw error;
+    if (error) {
+      console.error("updateHeroSlide error:", error);
+      return res.status(500).json({ success: false, message: error.message });
+    }
     return res.json({ success: true, slide: data, message: "Hero slide updated successfully." });
   } catch (err) {
+    console.error("updateHeroSlide catch error:", err);
     return res.status(500).json({ success: false, message: err.message });
   }
 };
@@ -318,9 +330,13 @@ const deleteHeroSlide = async (req, res) => {
   try {
     const { id } = req.params;
     const { error } = await supabase.from("hero_slides").delete().eq("id", id);
-    if (error) throw error;
+    if (error) {
+      console.error("deleteHeroSlide error:", error);
+      return res.status(500).json({ success: false, message: error.message });
+    }
     return res.json({ success: true, message: "Hero slide deleted successfully." });
   } catch (err) {
+    console.error("deleteHeroSlide catch error:", err);
     return res.status(500).json({ success: false, message: err.message });
   }
 };
@@ -354,23 +370,32 @@ const createOfferBar = async (req, res) => {
       return res.status(400).json({ success: false, message: "Offer bar announcement text is required." });
     }
 
+    const safeStartsAt = starts_at && typeof starts_at === 'string' && starts_at.trim() ? starts_at.trim() : null;
+    const safeEndsAt = ends_at && typeof ends_at === 'string' && ends_at.trim() ? ends_at.trim() : null;
+    const safeDuration = Math.max(1, parseInt(duration_seconds, 10) || 4);
+    const safeSortOrder = Math.max(0, parseInt(sort_order, 10) || 0);
+
     const { data, error } = await supabase
       .from("offer_bars")
       .insert({
         text: text.trim(),
-        route: route || null,
-        duration_seconds: parseInt(duration_seconds, 10) || 4,
-        sort_order: parseInt(sort_order, 10) || 0,
+        route: route && route.trim() ? route.trim() : null,
+        duration_seconds: safeDuration,
+        sort_order: safeSortOrder,
         is_active: Boolean(is_active),
-        starts_at: starts_at || null,
-        ends_at: ends_at || null
+        starts_at: safeStartsAt,
+        ends_at: safeEndsAt
       })
       .select("*")
       .single();
 
-    if (error) throw error;
+    if (error) {
+      console.error("createOfferBar error:", error);
+      return res.status(500).json({ success: false, message: error.message });
+    }
     return res.json({ success: true, offer: data, message: "Offer bar created successfully." });
   } catch (err) {
+    console.error("createOfferBar catch error:", err);
     return res.status(500).json({ success: false, message: err.message });
   }
 };
@@ -385,12 +410,12 @@ const updateOfferBar = async (req, res) => {
 
     const updates = {};
     if (text !== undefined) updates.text = text.trim();
-    if (route !== undefined) updates.route = route;
-    if (duration_seconds !== undefined) updates.duration_seconds = parseInt(duration_seconds, 10) || 4;
-    if (sort_order !== undefined) updates.sort_order = parseInt(sort_order, 10) || 0;
+    if (route !== undefined) updates.route = route && route.trim() ? route.trim() : null;
+    if (duration_seconds !== undefined) updates.duration_seconds = Math.max(1, parseInt(duration_seconds, 10) || 4);
+    if (sort_order !== undefined) updates.sort_order = Math.max(0, parseInt(sort_order, 10) || 0);
     if (is_active !== undefined) updates.is_active = Boolean(is_active);
-    if (starts_at !== undefined) updates.starts_at = starts_at || null;
-    if (ends_at !== undefined) updates.ends_at = ends_at || null;
+    if (starts_at !== undefined) updates.starts_at = starts_at && typeof starts_at === 'string' && starts_at.trim() ? starts_at.trim() : null;
+    if (ends_at !== undefined) updates.ends_at = ends_at && typeof ends_at === 'string' && ends_at.trim() ? ends_at.trim() : null;
 
     const { data, error } = await supabase
       .from("offer_bars")
@@ -399,9 +424,13 @@ const updateOfferBar = async (req, res) => {
       .select("*")
       .single();
 
-    if (error) throw error;
+    if (error) {
+      console.error("updateOfferBar error:", error);
+      return res.status(500).json({ success: false, message: error.message });
+    }
     return res.json({ success: true, offer: data, message: "Offer bar updated successfully." });
   } catch (err) {
+    console.error("updateOfferBar catch error:", err);
     return res.status(500).json({ success: false, message: err.message });
   }
 };
@@ -447,9 +476,51 @@ const getSiteSettingsAdmin = async (req, res) => {
  */
 const updateSiteSettingsAdmin = async (req, res) => {
   try {
-    const updates = { ...req.body };
-    delete updates.id;
-    delete updates.created_at;
+    const allowedKeys = [
+      "site_name",
+      "logo_path",
+      "favicon_path",
+      "phone_number",
+      "email",
+      "whatsapp_number",
+      "instagram_url",
+      "facebook_url",
+      "tiktok_url",
+      "x_url",
+      "location_name",
+      "location_url",
+      "about_us",
+      "seo_title",
+      "seo_description",
+      "seo_keywords",
+      "delivery_fee",
+      "printing_price",
+      "badge_price",
+      "premier_league_badge_available",
+      "champions_league_badge_available",
+      "la_liga_badge_available",
+      "low_stock_threshold"
+    ];
+
+    const updates = {};
+    for (const key of allowedKeys) {
+      if (req.body[key] !== undefined) {
+        updates[key] = req.body[key];
+      }
+    }
+
+    if (updates.delivery_fee !== undefined) {
+      updates.delivery_fee = parseFloat(updates.delivery_fee) || 0;
+    }
+    if (updates.low_stock_threshold !== undefined) {
+      updates.low_stock_threshold = parseInt(updates.low_stock_threshold, 10) || 5;
+    }
+    if (updates.printing_price !== undefined) {
+      updates.printing_price = parseFloat(updates.printing_price) || 0;
+    }
+    if (updates.badge_price !== undefined) {
+      updates.badge_price = parseFloat(updates.badge_price) || 0;
+    }
 
     const { data, error } = await supabase
       .from("site_settings")
@@ -458,9 +529,14 @@ const updateSiteSettingsAdmin = async (req, res) => {
       .select("*")
       .single();
 
-    if (error) throw error;
+    if (error) {
+      console.error("updateSiteSettingsAdmin database error:", error);
+      return res.status(500).json({ success: false, message: error.message });
+    }
+
     return res.json({ success: true, settings: data, message: "Site settings updated successfully." });
   } catch (err) {
+    console.error("updateSiteSettingsAdmin unexpected error:", err);
     return res.status(500).json({ success: false, message: err.message });
   }
 };
@@ -608,6 +684,51 @@ const getProductsAdmin = async (req, res) => {
 };
 
 /**
+ * GET /api/admin/products/:id
+ */
+const getProductByIdAdmin = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { data: product, error } = await supabase
+      .from("products")
+      .select("*, categories(id, name, slug)")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!product) {
+      return res.status(404).json({ success: false, message: "Product not found." });
+    }
+
+    const [mediaRes, variantsRes] = await Promise.all([
+      supabase
+        .from("product_media")
+        .select("*")
+        .eq("product_id", id)
+        .order("is_cover", { ascending: false })
+        .order("sort_order", { ascending: true }),
+      supabase
+        .from("product_variants")
+        .select("*")
+        .eq("product_id", id)
+        .order("sort_order", { ascending: true })
+    ]);
+
+    return res.json({
+      success: true,
+      product: {
+        ...product,
+        media: mediaRes.data || [],
+        variants: variantsRes.data || []
+      }
+    });
+  } catch (err) {
+    console.error("getProductByIdAdmin error:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
  * POST /api/admin/products
  */
 const createProduct = async (req, res) => {
@@ -620,12 +741,17 @@ const createProduct = async (req, res) => {
       base_price,
       old_price,
       stock_quantity = 0,
+      track_inventory = true,
       is_premium = false,
       is_active = true,
       is_featured = false,
       is_best_seller = false,
       is_new_arrival = false,
-      image_url
+      printing_available = false,
+      badges_available = false,
+      images = [],
+      image_url,
+      variants = []
     } = req.body;
 
     if (!name || !name.trim()) {
@@ -638,6 +764,12 @@ const createProduct = async (req, res) => {
 
     if (base_price === undefined || isNaN(parseFloat(base_price))) {
       return res.status(400).json({ success: false, message: "A valid base price is required." });
+    }
+
+    // Determine total stock from variants if variants provided
+    let calculatedStock = parseInt(stock_quantity, 10) || 0;
+    if (variants && variants.length > 0 && track_inventory) {
+      calculatedStock = variants.reduce((sum, v) => sum + (parseInt(v.stock_quantity, 10) || 0), 0);
     }
 
     // Generate unique slug
@@ -658,27 +790,69 @@ const createProduct = async (req, res) => {
         description: description ? description.trim() : null,
         base_price: parseFloat(base_price),
         old_price: old_price ? parseFloat(old_price) : null,
-        stock_quantity: parseInt(stock_quantity, 10) || 0,
+        stock_quantity: calculatedStock,
+        track_inventory: Boolean(track_inventory),
         is_premium: Boolean(is_premium),
         is_active: Boolean(is_active),
         is_featured: Boolean(is_featured),
         is_best_seller: Boolean(is_best_seller),
-        is_new_arrival: Boolean(is_new_arrival)
+        is_new_arrival: Boolean(is_new_arrival),
+        printing_available: Boolean(printing_available),
+        badges_available: Boolean(badges_available)
       })
       .select("*")
       .single();
 
     if (insertErr) throw insertErr;
 
-    // If image_url provided, link it in product_media
-    if (image_url && image_url.trim()) {
-      await supabase.from("product_media").insert({
-        product_id: product.id,
-        media_type: "image",
-        storage_path: image_url.trim(),
-        is_cover: true,
-        sort_order: 0
+    // Handle multiple product media / images
+    let mediaList = [];
+    if (Array.isArray(images) && images.length > 0) {
+      mediaList = images.filter((img) => img && (typeof img === 'string' ? img.trim() : img.storage_path));
+    } else if (image_url && image_url.trim()) {
+      mediaList = [{ storage_path: image_url.trim(), is_cover: true, sort_order: 0 }];
+    }
+
+    if (mediaList.length > 0) {
+      const mediaInserts = mediaList.map((item, idx) => {
+        const path = typeof item === 'string' ? item.trim() : item.storage_path;
+        const isCover = typeof item === 'object' && item.is_cover !== undefined ? item.is_cover : idx === 0;
+        return {
+          product_id: product.id,
+          media_type: "image",
+          storage_path: path,
+          alt_text: (typeof item === 'object' && item.alt_text) || product.name,
+          color_value: (typeof item === 'object' && item.color_value) || null,
+          is_cover: isCover,
+          sort_order: (typeof item === 'object' && item.sort_order !== undefined) ? item.sort_order : idx
+        };
       });
+
+      // Ensure at least one cover exists
+      if (!mediaInserts.some((m) => m.is_cover) && mediaInserts.length > 0) {
+        mediaInserts[0].is_cover = true;
+      }
+
+      await supabase.from("product_media").insert(mediaInserts);
+    }
+
+    // Handle product variants
+    if (Array.isArray(variants) && variants.length > 0) {
+      const variantInserts = variants.map((v, idx) => ({
+        product_id: product.id,
+        size_value: v.size_value ? String(v.size_value).trim() : null,
+        size_type: v.size_type || null,
+        color_value: v.color_value ? String(v.color_value).trim() : null,
+        color_name: v.color_name ? String(v.color_name).trim() : null,
+        sku: v.sku ? String(v.sku).trim() : null,
+        price: v.price !== undefined && v.price !== '' ? parseFloat(v.price) : null,
+        old_price: v.old_price !== undefined && v.old_price !== '' ? parseFloat(v.old_price) : null,
+        stock_quantity: parseInt(v.stock_quantity, 10) || 0,
+        is_active: v.is_active !== undefined ? Boolean(v.is_active) : true,
+        sort_order: v.sort_order !== undefined ? parseInt(v.sort_order, 10) : idx
+      }));
+
+      await supabase.from("product_variants").insert(variantInserts);
     }
 
     return res.json({
@@ -706,12 +880,17 @@ const updateProduct = async (req, res) => {
       base_price,
       old_price,
       stock_quantity,
+      track_inventory,
       is_premium,
       is_active,
       is_featured,
       is_best_seller,
       is_new_arrival,
-      image_url
+      printing_available,
+      badges_available,
+      images,
+      image_url,
+      variants
     } = req.body;
 
     const updates = {};
@@ -721,12 +900,21 @@ const updateProduct = async (req, res) => {
     if (description !== undefined) updates.description = description ? description.trim() : null;
     if (base_price !== undefined) updates.base_price = parseFloat(base_price);
     if (old_price !== undefined) updates.old_price = old_price ? parseFloat(old_price) : null;
-    if (stock_quantity !== undefined) updates.stock_quantity = parseInt(stock_quantity, 10) || 0;
+    if (track_inventory !== undefined) updates.track_inventory = Boolean(track_inventory);
     if (is_premium !== undefined) updates.is_premium = Boolean(is_premium);
     if (is_active !== undefined) updates.is_active = Boolean(is_active);
     if (is_featured !== undefined) updates.is_featured = Boolean(is_featured);
     if (is_best_seller !== undefined) updates.is_best_seller = Boolean(is_best_seller);
     if (is_new_arrival !== undefined) updates.is_new_arrival = Boolean(is_new_arrival);
+    if (printing_available !== undefined) updates.printing_available = Boolean(printing_available);
+    if (badges_available !== undefined) updates.badges_available = Boolean(badges_available);
+
+    // If variants updated, re-calculate total stock if tracking inventory
+    if (Array.isArray(variants) && variants.length > 0 && (track_inventory !== false)) {
+      updates.stock_quantity = variants.reduce((sum, v) => sum + (parseInt(v.stock_quantity, 10) || 0), 0);
+    } else if (stock_quantity !== undefined) {
+      updates.stock_quantity = parseInt(stock_quantity, 10) || 0;
+    }
 
     const { data: updatedProduct, error } = await supabase
       .from("products")
@@ -737,9 +925,34 @@ const updateProduct = async (req, res) => {
 
     if (error) throw error;
 
-    // If image_url updated
-    if (image_url && image_url.trim()) {
-      // Upsert cover image
+    // Handle multiple product media / images if provided
+    if (Array.isArray(images)) {
+      // Clear existing media
+      await supabase.from("product_media").delete().eq("product_id", id);
+
+      const mediaInserts = images
+        .filter((img) => img && (typeof img === 'string' ? img.trim() : img.storage_path))
+        .map((item, idx) => {
+          const path = typeof item === 'string' ? item.trim() : item.storage_path;
+          const isCover = typeof item === 'object' && item.is_cover !== undefined ? item.is_cover : idx === 0;
+          return {
+            product_id: id,
+            media_type: "image",
+            storage_path: path,
+            alt_text: (typeof item === 'object' && item.alt_text) || updatedProduct.name,
+            color_value: (typeof item === 'object' && item.color_value) || null,
+            is_cover: isCover,
+            sort_order: (typeof item === 'object' && item.sort_order !== undefined) ? item.sort_order : idx
+          };
+        });
+
+      if (mediaInserts.length > 0) {
+        if (!mediaInserts.some((m) => m.is_cover)) {
+          mediaInserts[0].is_cover = true;
+        }
+        await supabase.from("product_media").insert(mediaInserts);
+      }
+    } else if (image_url && image_url.trim()) {
       const { data: existingCover } = await supabase
         .from("product_media")
         .select("id")
@@ -763,12 +976,36 @@ const updateProduct = async (req, res) => {
       }
     }
 
+    // Handle variants if provided
+    if (Array.isArray(variants)) {
+      await supabase.from("product_variants").delete().eq("product_id", id);
+
+      if (variants.length > 0) {
+        const variantInserts = variants.map((v, idx) => ({
+          product_id: id,
+          size_value: v.size_value ? String(v.size_value).trim() : null,
+          size_type: v.size_type || null,
+          color_value: v.color_value ? String(v.color_value).trim() : null,
+          color_name: v.color_name ? String(v.color_name).trim() : null,
+          sku: v.sku ? String(v.sku).trim() : null,
+          price: v.price !== undefined && v.price !== '' ? parseFloat(v.price) : null,
+          old_price: v.old_price !== undefined && v.old_price !== '' ? parseFloat(v.old_price) : null,
+          stock_quantity: parseInt(v.stock_quantity, 10) || 0,
+          is_active: v.is_active !== undefined ? Boolean(v.is_active) : true,
+          sort_order: v.sort_order !== undefined ? parseInt(v.sort_order, 10) : idx
+        }));
+
+        await supabase.from("product_variants").insert(variantInserts);
+      }
+    }
+
     return res.json({
       success: true,
       product: updatedProduct,
       message: `Product "${updatedProduct.name}" updated successfully.`
     });
   } catch (err) {
+    console.error("Update product error:", err);
     return res.status(500).json({ success: false, message: err.message });
   }
 };
@@ -1296,6 +1533,7 @@ module.exports = {
   // Products
   getProductsOverview,
   getProductsAdmin,
+  getProductByIdAdmin,
   createProduct,
   updateProduct,
   deleteProduct,

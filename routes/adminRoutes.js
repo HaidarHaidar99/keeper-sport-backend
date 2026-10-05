@@ -37,6 +37,7 @@ router.put("/settings", adminController.updateSiteSettingsAdmin);
 // Products
 router.get("/products/overview", adminController.getProductsOverview);
 router.get("/products", adminController.getProductsAdmin);
+router.get("/products/:id", adminController.getProductByIdAdmin);
 router.post("/products", adminController.createProduct);
 router.put("/products/:id", adminController.updateProduct);
 router.delete("/products/:id", adminController.deleteProduct);
