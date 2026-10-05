@@ -119,10 +119,23 @@ const optionalAuth = async (req, res, next) => {
   }
 };
 
+const requireAdmin = async (req, res, next) => {
+  return requireAuth(req, res, () => {
+    if (!req.user || (req.user.role !== "admin" && req.user.role !== "super_admin")) {
+      return res.status(403).json({
+        success: false,
+        message: "Forbidden: Administrator privileges required."
+      });
+    }
+    next();
+  });
+};
+
 module.exports = {
   COOKIE_NAME,
   getCookieOptions,
   sanitizeUser,
   requireAuth,
-  optionalAuth
+  optionalAuth,
+  requireAdmin
 };
