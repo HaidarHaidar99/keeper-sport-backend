@@ -8,7 +8,7 @@ const getSiteSettings = async (req, res) => {
   try {
     const { data: settings, error } = await supabase
       .from("site_settings")
-      .select("site_name, logo_path, favicon_path, phone_number, email, whatsapp_number, instagram_url, facebook_url, tiktok_url, x_url, location_name, location_url, about_us")
+      .select("site_name, logo_path, favicon_path, phone_number, email, whatsapp_number, instagram_url, facebook_url, tiktok_url, x_url, location_name, location_url, about_us, delivery_fee, printing_price, badge_price, premier_league_badge_available, champions_league_badge_available, la_liga_badge_available")
       .eq("id", 1)
       .maybeSingle();
 
