@@ -1254,7 +1254,8 @@ const getOrdersAdmin = async (req, res) => {
 const updateOrderStatus = async (req, res) => {
   try {
     const { id } = req.params;
-    const { status, message } = req.body || {};
+    const { status, message, rejection_message, reason } = req.body || {};
+    const rejectReason = (rejection_message || message || reason || "").trim();
 
     if (!id) {
       return res.status(400).json({ success: false, message: "Order ID is required." });
@@ -1306,13 +1307,13 @@ const updateOrderStatus = async (req, res) => {
     } else if (status === "delivered") {
       updates.delivered_at = new Date().toISOString();
     } else if (status === "rejected") {
-      if (!message || !message.trim()) {
+      if (!rejectReason) {
         return res.status(400).json({
           success: false,
           message: "Rejection reason is required when rejecting an order."
         });
       }
-      updates.rejection_message = message.trim();
+      updates.rejection_message = rejectReason;
       updates.rejected_at = new Date().toISOString();
     }
 

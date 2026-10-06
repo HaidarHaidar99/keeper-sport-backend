@@ -8,7 +8,7 @@ const supabase = require("../config/supabase");
  */
 const toggleFavorite = async (req, res) => {
   try {
-    const { productId } = req.body || {};
+    const productId = req.body?.productId || req.body?.product_id;
     if (!productId) {
       return res.status(400).json({
         success: false,

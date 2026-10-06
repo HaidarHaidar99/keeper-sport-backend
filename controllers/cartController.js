@@ -228,7 +228,8 @@ const fetchFormattedCartData = async (cartId) => {
  */
 const addToCart = async (req, res) => {
   try {
-    const { productId, variantId, quantity = 1, printedName, printedNumber, badge } = req.body;
+    const productId = req.body.productId || req.body.product_id;
+    const { variantId, quantity = 1, printedName, printedNumber, badge } = req.body;
 
     if (!productId) {
       return res.status(400).json({
