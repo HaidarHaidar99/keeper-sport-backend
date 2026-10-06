@@ -119,12 +119,23 @@ const getOfferBars = async (req, res) => {
  */
 const getCategories = async (req, res) => {
   try {
-    const { data: categories, error } = await supabase
+    let { data: categories, error } = await supabase
       .from("categories")
-      .select("id, name, slug, sort_order, is_active")
+      .select("id, name, slug, sort_order, is_active, image_path")
       .eq("is_active", true)
       .order("sort_order", { ascending: true })
       .order("name", { ascending: true });
+
+    if (error && error.message && error.message.includes("image_path")) {
+      const fallback = await supabase
+        .from("categories")
+        .select("id, name, slug, sort_order, is_active")
+        .eq("is_active", true)
+        .order("sort_order", { ascending: true })
+        .order("name", { ascending: true });
+      categories = (fallback.data || []).map((c) => ({ ...c, image_path: null }));
+      error = fallback.error;
+    }
 
     if (error) {
       console.error("Error fetching categories:", error);
@@ -226,10 +237,170 @@ const getUserCounts = async (req, res) => {
   }
 };
 
+/**
+ * Get Public Active Offers
+ * GET /api/offers
+ */
+const getOffers = async (req, res) => {
+  try {
+    const now = new Date().toISOString();
+    const { data: offers, error } = await supabase
+      .from("offers")
+      .select("id, title, description, discount_type, discount_value, free_delivery, starts_at, ends_at, is_visible")
+      .eq("is_visible", true)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("Error fetching offers:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to fetch offers."
+      });
+    }
+
+    const activeOffers = (offers || []).filter((offer) => {
+      if (offer.starts_at && new Date(offer.starts_at) > new Date(now)) return false;
+      if (offer.ends_at && new Date(offer.ends_at) < new Date(now)) return false;
+      return true;
+    });
+
+    return res.json({
+      success: true,
+      offers: activeOffers
+    });
+  } catch (err) {
+    console.error("Unexpected error in getOffers:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Server error fetching offers."
+    });
+  }
+};
+
+/**
+ * Get Public Visible Product Reviews
+ * GET /api/reviews
+ */
+const getPublicReviews = async (req, res) => {
+  try {
+    const { data: reviews, error } = await supabase
+      .from("product_reviews")
+      .select("id, product_id, product_name_snapshot, rating, review_text, created_at, users:user_id(full_name)")
+      .eq("is_visible", true)
+      .order("created_at", { ascending: false })
+      .limit(50);
+
+    if (error) {
+      console.error("Error fetching public reviews:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to fetch reviews."
+      });
+    }
+
+    const formatted = (reviews || []).map((r) => ({
+      id: r.id,
+      product_id: r.product_id,
+      product_name: r.product_name_snapshot,
+      rating: Number(r.rating) || 5,
+      review_text: r.review_text,
+      created_at: r.created_at,
+      author: r.users?.full_name || "Verified Customer"
+    }));
+
+    return res.json({
+      success: true,
+      reviews: formatted
+    });
+  } catch (err) {
+    console.error("Unexpected error in getPublicReviews:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Server error fetching public reviews."
+    });
+  }
+};
+
+/**
+ * Submit Contact Us Message
+ * POST /api/contact
+ */
+const submitContactMessage = async (req, res) => {
+  try {
+    const { full_name, email, phone, message } = req.body || {};
+
+    if (!full_name || !full_name.trim()) {
+      return res.status(400).json({ success: false, message: "Full name is required." });
+    }
+    if (!email || !email.trim()) {
+      return res.status(400).json({ success: false, message: "Email is required." });
+    }
+    if (!phone || !phone.trim()) {
+      return res.status(400).json({ success: false, message: "Phone number is required." });
+    }
+    if (!message || !message.trim()) {
+      return res.status(400).json({ success: false, message: "Message is required." });
+    }
+
+    const userId = req.user?.id || null;
+
+    // Insert into real contact_messages table
+    const { data: contactRecord, error: contactError } = await supabase
+      .from("contact_messages")
+      .insert({
+        user_id: userId,
+        full_name: full_name.trim(),
+        email: email.trim().toLowerCase(),
+        phone: phone.trim(),
+        message: message.trim()
+      })
+      .select("id")
+      .single();
+
+    if (contactError) {
+      console.error("Error creating contact message:", contactError);
+      return res.status(500).json({
+        success: false,
+        message: "Could not submit message. Please try again."
+      });
+    }
+
+    // Insert into real admin notifications
+    try {
+      await supabase.from("notifications").insert({
+        recipient_type: "admin",
+        type: "contact",
+        title: `Inquiry from ${full_name.trim()}`,
+        message: message.trim().slice(0, 180),
+        reference_type: "contact_message",
+        reference_id: contactRecord.id,
+        is_read: false
+      });
+    } catch (notifErr) {
+      console.warn("Notification insert warning:", notifErr);
+    }
+
+    return res.json({
+      success: true,
+      message: "Thank you for contacting Keeper Sports. We have received your inquiry."
+    });
+  } catch (err) {
+    console.error("Unexpected error in submitContactMessage:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Server error submitting contact message."
+    });
+  }
+};
+
 module.exports = {
   getSiteSettings,
   getHeroSlides,
   getOfferBars,
   getCategories,
-  getUserCounts
+  getUserCounts,
+  getOffers,
+  getPublicReviews,
+  submitContactMessage
 };
+

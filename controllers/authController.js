@@ -812,6 +812,124 @@ const logout = async (req, res) => {
 };
 
 /**
+ * Admin portal authentication
+ * POST /api/auth/admin/login
+ * Strict check: user MUST have role 'admin' or 'super_admin'
+ * Sets keeper_admin_token and leaves customer keeper_token untouched
+ */
+const adminLogin = async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: "Email and password are required."
+      });
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+
+    // 1. Fetch user from database
+    const { data: user, error } = await supabase
+      .from("users")
+      .select("*")
+      .eq("email", normalizedEmail)
+      .maybeSingle();
+
+    if (error) {
+      console.error("Database error during admin login:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Authentication service error. Please try again."
+      });
+    }
+
+    if (!user || user.auth_provider !== "local" || !user.password_hash) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid administrator credentials."
+      });
+    }
+
+    // 2. Strict Role verification
+    if (user.role !== "admin" && user.role !== "super_admin") {
+      return res.status(403).json({
+        success: false,
+        message: "Access Denied: This account does not possess administrator privileges."
+      });
+    }
+
+    // 3. Verify password
+    const isMatch = await bcrypt.compare(password, user.password_hash);
+    if (!isMatch) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid administrator credentials."
+      });
+    }
+
+    // 4. Issue Admin JWT
+    const secret = process.env.JWT_SECRET || "keeper-sports-dev-jwt-secret-replace-in-production";
+    const token = jwt.sign(
+      { id: user.id, email: user.email, role: user.role, portal: "admin" },
+      secret,
+      { expiresIn: "7d" }
+    );
+
+    // 5. Set HTTP-only admin cookie (keeper_admin_token)
+    res.cookie("keeper_admin_token", token, getCookieOptions());
+
+    return res.json({
+      success: true,
+      message: "Admin authenticated successfully.",
+      token,
+      user: sanitizeUser(user)
+    });
+  } catch (err) {
+    console.error("Admin login error:", err);
+    return res.status(500).json({
+      success: false,
+      message: "An unexpected error occurred during admin login."
+    });
+  }
+};
+
+/**
+ * Admin portal logout
+ * POST /api/auth/admin/logout
+ */
+const adminLogout = async (req, res) => {
+  try {
+    res.clearCookie("keeper_admin_token", {
+      ...getCookieOptions(),
+      maxAge: 0
+    });
+    return res.json({
+      success: true,
+      message: "Admin signed out successfully."
+    });
+  } catch (err) {
+    console.error("Admin logout error:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Error signing out admin."
+    });
+  }
+};
+
+/**
+ * Get current admin session
+ * GET /api/auth/admin/me
+ */
+const getAdminMe = async (req, res) => {
+  return res.json({
+    success: true,
+    user: sanitizeUser(req.user)
+  });
+};
+
+/**
  * Get current authenticated user session
  * GET /api/auth/me
  */
@@ -825,6 +943,9 @@ const getMe = async (req, res) => {
 module.exports = {
   register,
   login,
+  adminLogin,
+  adminLogout,
+  getAdminMe,
   verifyEmail,
   resendVerification,
   forgotPassword,

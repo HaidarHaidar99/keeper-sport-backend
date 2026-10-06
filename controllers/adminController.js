@@ -39,14 +39,8 @@ const slugify = (text) => {
  */
 const getDashboardOverview = async (req, res) => {
   try {
-    // Fetch low stock threshold from settings
-    const { data: settings } = await supabase
-      .from("site_settings")
-      .select("low_stock_threshold")
-      .eq("id", 1)
-      .maybeSingle();
-
-    const lowStockThreshold = settings?.low_stock_threshold || 5;
+    // Standard low stock threshold constant
+    const lowStockThreshold = 5;
 
     // Run parallel count and aggregate queries
     const [
@@ -498,8 +492,7 @@ const updateSiteSettingsAdmin = async (req, res) => {
       "badge_price",
       "premier_league_badge_available",
       "champions_league_badge_available",
-      "la_liga_badge_available",
-      "low_stock_threshold"
+      "la_liga_badge_available"
     ];
 
     const updates = {};
@@ -511,9 +504,6 @@ const updateSiteSettingsAdmin = async (req, res) => {
 
     if (updates.delivery_fee !== undefined) {
       updates.delivery_fee = parseFloat(updates.delivery_fee) || 0;
-    }
-    if (updates.low_stock_threshold !== undefined) {
-      updates.low_stock_threshold = parseInt(updates.low_stock_threshold, 10) || 5;
     }
     if (updates.printing_price !== undefined) {
       updates.printing_price = parseFloat(updates.printing_price) || 0;
@@ -550,13 +540,7 @@ const updateSiteSettingsAdmin = async (req, res) => {
  */
 const getProductsOverview = async (req, res) => {
   try {
-    const { data: settings } = await supabase
-      .from("site_settings")
-      .select("low_stock_threshold")
-      .eq("id", 1)
-      .maybeSingle();
-
-    const lowStockThreshold = settings?.low_stock_threshold || 5;
+    const lowStockThreshold = 5;
 
     const [totalRes, activeRes, outRes, lowRes, featuredRes] = await Promise.all([
       supabase.from("products").select("id", { count: "exact", head: true }),
@@ -592,9 +576,7 @@ const getProductsAdmin = async (req, res) => {
     const limitNum = Math.max(1, Math.min(50, parseInt(limit, 10) || 15));
     const offset = (pageNum - 1) * limitNum;
 
-    // Fetch site low stock threshold
-    const { data: settings } = await supabase.from("site_settings").select("low_stock_threshold").eq("id", 1).maybeSingle();
-    const lowStockThreshold = settings?.low_stock_threshold || 5;
+    const lowStockThreshold = 5;
 
     let query = supabase
       .from("products")
@@ -741,7 +723,6 @@ const createProduct = async (req, res) => {
       base_price,
       old_price,
       stock_quantity = 0,
-      track_inventory = true,
       is_premium = false,
       is_active = true,
       is_featured = false,
@@ -768,7 +749,7 @@ const createProduct = async (req, res) => {
 
     // Determine total stock from variants if variants provided
     let calculatedStock = parseInt(stock_quantity, 10) || 0;
-    if (variants && variants.length > 0 && track_inventory) {
+    if (variants && variants.length > 0) {
       calculatedStock = variants.reduce((sum, v) => sum + (parseInt(v.stock_quantity, 10) || 0), 0);
     }
 
@@ -791,7 +772,6 @@ const createProduct = async (req, res) => {
         base_price: parseFloat(base_price),
         old_price: old_price ? parseFloat(old_price) : null,
         stock_quantity: calculatedStock,
-        track_inventory: Boolean(track_inventory),
         is_premium: Boolean(is_premium),
         is_active: Boolean(is_active),
         is_featured: Boolean(is_featured),
@@ -842,8 +822,7 @@ const createProduct = async (req, res) => {
         product_id: product.id,
         size_value: v.size_value ? String(v.size_value).trim() : null,
         size_type: v.size_type || null,
-        color_value: v.color_value ? String(v.color_value).trim() : null,
-        color_name: v.color_name ? String(v.color_name).trim() : null,
+        color_value: v.color_value ? String(v.color_value).trim() : (v.color_name ? String(v.color_name).trim() : null),
         sku: v.sku ? String(v.sku).trim() : null,
         price: v.price !== undefined && v.price !== '' ? parseFloat(v.price) : null,
         old_price: v.old_price !== undefined && v.old_price !== '' ? parseFloat(v.old_price) : null,
@@ -880,7 +859,6 @@ const updateProduct = async (req, res) => {
       base_price,
       old_price,
       stock_quantity,
-      track_inventory,
       is_premium,
       is_active,
       is_featured,
@@ -900,7 +878,6 @@ const updateProduct = async (req, res) => {
     if (description !== undefined) updates.description = description ? description.trim() : null;
     if (base_price !== undefined) updates.base_price = parseFloat(base_price);
     if (old_price !== undefined) updates.old_price = old_price ? parseFloat(old_price) : null;
-    if (track_inventory !== undefined) updates.track_inventory = Boolean(track_inventory);
     if (is_premium !== undefined) updates.is_premium = Boolean(is_premium);
     if (is_active !== undefined) updates.is_active = Boolean(is_active);
     if (is_featured !== undefined) updates.is_featured = Boolean(is_featured);
@@ -909,8 +886,8 @@ const updateProduct = async (req, res) => {
     if (printing_available !== undefined) updates.printing_available = Boolean(printing_available);
     if (badges_available !== undefined) updates.badges_available = Boolean(badges_available);
 
-    // If variants updated, re-calculate total stock if tracking inventory
-    if (Array.isArray(variants) && variants.length > 0 && (track_inventory !== false)) {
+    // If variants updated, re-calculate total stock from variants
+    if (Array.isArray(variants) && variants.length > 0) {
       updates.stock_quantity = variants.reduce((sum, v) => sum + (parseInt(v.stock_quantity, 10) || 0), 0);
     } else if (stock_quantity !== undefined) {
       updates.stock_quantity = parseInt(stock_quantity, 10) || 0;
@@ -985,8 +962,7 @@ const updateProduct = async (req, res) => {
           product_id: id,
           size_value: v.size_value ? String(v.size_value).trim() : null,
           size_type: v.size_type || null,
-          color_value: v.color_value ? String(v.color_value).trim() : null,
-          color_name: v.color_name ? String(v.color_name).trim() : null,
+          color_value: v.color_value ? String(v.color_value).trim() : (v.color_name ? String(v.color_name).trim() : null),
           sku: v.sku ? String(v.sku).trim() : null,
           price: v.price !== undefined && v.price !== '' ? parseFloat(v.price) : null,
           old_price: v.old_price !== undefined && v.old_price !== '' ? parseFloat(v.old_price) : null,
@@ -1033,19 +1009,40 @@ const deleteProduct = async (req, res) => {
  */
 const getCategoriesAdmin = async (req, res) => {
   try {
-    const { data: categories, error } = await supabase
+    let selectFields = `
+      id,
+      name,
+      slug,
+      is_active,
+      sort_order,
+      image_path,
+      created_at,
+      products (id)
+    `;
+
+    let { data: categories, error } = await supabase
       .from("categories")
-      .select(`
-        id,
-        name,
-        slug,
-        is_active,
-        sort_order,
-        created_at,
-        products (id)
-      `)
+      .select(selectFields)
       .order("sort_order", { ascending: true })
       .order("name", { ascending: true });
+
+    if (error && error.message && error.message.includes("image_path")) {
+      const fallback = await supabase
+        .from("categories")
+        .select(`
+          id,
+          name,
+          slug,
+          is_active,
+          sort_order,
+          created_at,
+          products (id)
+        `)
+        .order("sort_order", { ascending: true })
+        .order("name", { ascending: true });
+      categories = (fallback.data || []).map((c) => ({ ...c, image_path: null }));
+      error = fallback.error;
+    }
 
     if (error) throw error;
 
@@ -1055,6 +1052,7 @@ const getCategoriesAdmin = async (req, res) => {
       slug: cat.slug,
       isActive: cat.is_active,
       sortOrder: cat.sort_order,
+      imagePath: cat.image_path || null,
       createdAt: cat.created_at,
       productCount: (cat.products || []).length
     }));
@@ -1077,23 +1075,38 @@ const getCategoriesAdmin = async (req, res) => {
  */
 const createCategory = async (req, res) => {
   try {
-    const { name, sort_order = 0, is_active = true } = req.body;
+    const { name, sort_order = 0, is_active = true, image_path } = req.body;
     if (!name || !name.trim()) {
       return res.status(400).json({ success: false, message: "Category name is required." });
     }
 
     const slug = slugify(name);
+    const categoryData = {
+      name: name.trim(),
+      slug,
+      sort_order: parseInt(sort_order, 10) || 0,
+      is_active: Boolean(is_active)
+    };
+    if (image_path !== undefined) {
+      categoryData.image_path = image_path ? image_path.trim() : null;
+    }
 
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from("categories")
-      .insert({
-        name: name.trim(),
-        slug,
-        sort_order: parseInt(sort_order, 10) || 0,
-        is_active: Boolean(is_active)
-      })
+      .insert(categoryData)
       .select("*")
       .single();
+
+    if (error && error.message && error.message.includes("image_path")) {
+      delete categoryData.image_path;
+      const retry = await supabase
+        .from("categories")
+        .insert(categoryData)
+        .select("*")
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
 
     if (error) throw error;
     return res.json({ success: true, category: data, message: `Category "${data.name}" created.` });
@@ -1108,7 +1121,7 @@ const createCategory = async (req, res) => {
 const updateCategory = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, sort_order, is_active } = req.body;
+    const { name, sort_order, is_active, image_path } = req.body;
 
     const updates = {};
     if (name !== undefined) {
@@ -1117,13 +1130,26 @@ const updateCategory = async (req, res) => {
     }
     if (sort_order !== undefined) updates.sort_order = parseInt(sort_order, 10) || 0;
     if (is_active !== undefined) updates.is_active = Boolean(is_active);
+    if (image_path !== undefined) updates.image_path = image_path ? image_path.trim() : null;
 
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from("categories")
       .update(updates)
       .eq("id", id)
       .select("*")
       .single();
+
+    if (error && error.message && error.message.includes("image_path")) {
+      delete updates.image_path;
+      const retry = await supabase
+        .from("categories")
+        .update(updates)
+        .eq("id", id)
+        .select("*")
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
 
     if (error) throw error;
     return res.json({ success: true, category: data, message: `Category updated.` });

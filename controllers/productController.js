@@ -77,14 +77,8 @@ const getProducts = async (req, res) => {
     const limitNum = Math.max(1, Math.min(48, parseInt(limit, 10) || 12));
     const offset = (pageNum - 1) * limitNum;
 
-    // 1. Fetch site settings for low stock threshold
-    const { data: siteSettings } = await supabase
-      .from("site_settings")
-      .select("low_stock_threshold")
-      .eq("id", 1)
-      .maybeSingle();
-
-    const lowStockThreshold = siteSettings?.low_stock_threshold || 5;
+    // 1. Standard low stock threshold constant from application domain
+    const lowStockThreshold = 5;
 
     // 2. Fetch categories map
     const { data: allCategories } = await supabase
@@ -328,14 +322,8 @@ const getFeaturedProducts = async (req, res) => {
     const { limit = 8 } = req.query;
     const limitNum = Math.max(1, Math.min(20, parseInt(limit, 10) || 8));
 
-    // Retrieve site settings for low stock threshold
-    const { data: siteSettings } = await supabase
-      .from("site_settings")
-      .select("low_stock_threshold")
-      .eq("id", 1)
-      .maybeSingle();
-
-    const lowStockThreshold = siteSettings?.low_stock_threshold || 5;
+    // Standard low stock threshold constant
+    const lowStockThreshold = 5;
 
     // Fetch active categories
     const { data: allCategories } = await supabase
@@ -504,9 +492,8 @@ const getProductBySlugOrId = async (req, res) => {
       });
     }
 
-    // Fetch site settings, media, variants, category, rating, reviews
-    const [settingsRes, mediaRes, variantsRes, catRes, ratingRes, reviewsRes] = await Promise.all([
-      supabase.from("site_settings").select("low_stock_threshold").eq("id", 1).maybeSingle(),
+    // Fetch media, variants, category, rating, reviews
+    const [mediaRes, variantsRes, catRes, ratingRes, reviewsRes] = await Promise.all([
       supabase.from("product_media").select("*").eq("product_id", product.id).order("sort_order", { ascending: true }),
       supabase.from("product_variants").select("*").eq("product_id", product.id).eq("is_active", true).order("sort_order", { ascending: true }),
       supabase.from("categories").select("id, name, slug").eq("id", product.category_id).maybeSingle(),
@@ -514,7 +501,7 @@ const getProductBySlugOrId = async (req, res) => {
       supabase.from("product_reviews").select("id, rating, review_text, created_at, user_id").eq("product_id", product.id).eq("is_visible", true).order("created_at", { ascending: false }).limit(20)
     ]);
 
-    const lowStockThreshold = settingsRes.data?.low_stock_threshold || 5;
+    const lowStockThreshold = 5;
     const pricing = computeProductPricing(product);
 
     const stockQty = product.stock_quantity || 0;
