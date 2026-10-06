@@ -4,7 +4,8 @@ const { optionalAuth } = require("../middleware/authMiddleware");
 const {
   getUserOrders,
   createOrder,
-  getOrderById
+  getOrderById,
+  cancelOrder
 } = require("../controllers/orderController");
 
 // Customer & Guest orders list
@@ -15,5 +16,9 @@ router.post("/", optionalAuth, createOrder);
 
 // Single order receipt
 router.get("/:id", optionalAuth, getOrderById);
+
+// Customer cancel order (strictly pending orders only)
+router.patch("/:id/cancel", optionalAuth, cancelOrder);
+router.post("/:id/cancel", optionalAuth, cancelOrder);
 
 module.exports = router;

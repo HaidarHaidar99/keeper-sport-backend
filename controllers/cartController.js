@@ -606,11 +606,58 @@ const removeCartItem = async (req, res) => {
   }
 };
 
+/**
+ * Clear Entire Cart
+ * DELETE /api/cart
+ */
+const clearCart = async (req, res) => {
+  try {
+    const userId = req.user?.id || null;
+    const guestIdentifier = req.headers["x-guest-identifier"] || req.cookies?.[GUEST_CART_COOKIE] || null;
+
+    if (!userId && !guestIdentifier) {
+      return res.status(400).json({ success: false, message: "Cart identifier required." });
+    }
+
+    let cartQuery = supabase.from("carts").select("id");
+    if (userId) {
+      cartQuery = cartQuery.eq("user_id", userId);
+    } else {
+      cartQuery = cartQuery.eq("guest_identifier", guestIdentifier);
+    }
+
+    const { data: cart } = await cartQuery.maybeSingle();
+
+    if (cart) {
+      await supabase.from("cart_items").delete().eq("cart_id", cart.id);
+    }
+
+    return res.json({
+      success: true,
+      message: "Cart cleared successfully.",
+      cart: {
+        id: cart?.id || null,
+        items: [],
+        cartCount: 0,
+        subtotal: 0
+      },
+      items: [],
+      cartCount: 0,
+      subtotal: 0
+    });
+  } catch (err) {
+    console.error("Error clearing cart:", err);
+    return res.status(500).json({ success: false, message: "Failed to clear cart." });
+  }
+};
+
 module.exports = {
   addToCart,
   getCart,
   updateCartItemQuantity,
   removeCartItem,
+  clearCart,
   fetchFormattedCartData,
   GUEST_CART_COOKIE
 };
+

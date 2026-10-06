@@ -321,8 +321,115 @@ const getOrderById = async (req, res) => {
   }
 };
 
+/**
+ * Customer Cancel Order
+ * PATCH /api/orders/:id/cancel
+ * Strictly permitted ONLY while status === 'pending'
+ */
+const cancelOrder = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user?.id || null;
+    const rawTokensHeader = req.headers["x-guest-order-tokens"] || req.headers["x-guest-access-token"] || null;
+
+    if (!id) {
+      return res.status(400).json({ success: false, message: "Order ID is required." });
+    }
+
+    const { data: order, error: findErr } = await supabase
+      .from("orders")
+      .select("id, status, user_id, guest_access_token_hash, order_number")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (findErr || !order) {
+      return res.status(404).json({ success: false, message: "Order not found." });
+    }
+
+    // 1. Ownership verification
+    let isAuthorized = false;
+    if (userId && order.user_id && order.user_id === userId) {
+      isAuthorized = true;
+    } else if (order.guest_access_token_hash && rawTokensHeader) {
+      let candidateTokens = [];
+      try {
+        const parsed = typeof rawTokensHeader === "string" ? JSON.parse(rawTokensHeader) : rawTokensHeader;
+        if (Array.isArray(parsed)) {
+          candidateTokens = parsed;
+        } else {
+          candidateTokens = [rawTokensHeader];
+        }
+      } catch {
+        candidateTokens = String(rawTokensHeader).split(",").map((t) => t.trim());
+      }
+
+      for (const t of candidateTokens) {
+        if (!t || typeof t !== "string") continue;
+        const hash = crypto.createHash("sha256").update(t).digest("hex");
+        if (hash === order.guest_access_token_hash) {
+          isAuthorized = true;
+          break;
+        }
+      }
+    }
+
+    if (!isAuthorized) {
+      return res.status(403).json({ success: false, message: "Unauthorized to cancel this order." });
+    }
+
+    // 2. Strict status check: ONLY PENDING may be cancelled by customer
+    if (order.status !== "pending") {
+      return res.status(400).json({
+        success: false,
+        message: `Order #${order.order_number} cannot be cancelled because it is already ${order.status}. Cancellation is only permitted while order is pending.`
+      });
+    }
+
+    // 3. Update status to 'cancelled'
+    const { data: updatedOrder, error: updateErr } = await supabase
+      .from("orders")
+      .update({
+        status: "cancelled",
+        cancelled_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      })
+      .eq("id", id)
+      .select("*, order_items(*)")
+      .single();
+
+    if (updateErr) {
+      console.error("Error cancelling order:", updateErr);
+      return res.status(500).json({ success: false, message: "Failed to cancel order." });
+    }
+
+    // 4. Record in status history
+    try {
+      await supabase.from("order_status_history").insert({
+        order_id: id,
+        from_status: "pending",
+        to_status: "cancelled",
+        changed_by: userId,
+        message: "Order cancelled by customer."
+      });
+    } catch (hErr) {
+      console.warn("Status history warning:", hErr);
+    }
+
+    return res.json({
+      success: true,
+      message: `Order #${order.order_number} has been cancelled.`,
+      order: updatedOrder
+    });
+  } catch (err) {
+    console.error("Unexpected error in cancelOrder:", err);
+    return res.status(500).json({ success: false, message: "Server error cancelling order." });
+  }
+};
+
 module.exports = {
   getUserOrders,
   createOrder,
-  getOrderById
+  getOrderById,
+  cancelOrder
 };
+

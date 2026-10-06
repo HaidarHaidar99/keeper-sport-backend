@@ -178,7 +178,49 @@ const getUserFavoriteIds = async (req, res) => {
   }
 };
 
+/**
+ * Clear All Favorites for User or Guest
+ * DELETE /api/favorites
+ */
+const clearFavorites = async (req, res) => {
+  try {
+    const userId = req.user?.id || null;
+    const guestIdentifier = req.headers["x-guest-identifier"] || req.cookies?.keeper_guest_cart || null;
+
+    if (!userId && !guestIdentifier) {
+      return res.status(400).json({ success: false, message: "User or guest identifier required." });
+    }
+
+    let delQuery = supabase.from("favorites").delete();
+    if (userId) {
+      delQuery = delQuery.eq("user_id", userId);
+    } else {
+      delQuery = delQuery.eq("guest_identifier", guestIdentifier);
+    }
+
+    const { error } = await delQuery;
+
+    if (error) {
+      console.error("Error clearing favorites:", error);
+      return res.status(500).json({ success: false, message: "Failed to clear favorites." });
+    }
+
+    return res.json({
+      success: true,
+      message: "Favorites cleared successfully.",
+      favoriteIds: [],
+      ids: [],
+      favoritesCount: 0
+    });
+  } catch (err) {
+    console.error("Error in clearFavorites:", err);
+    return res.status(500).json({ success: false, message: "Server error clearing favorites." });
+  }
+};
+
 module.exports = {
   toggleFavorite,
-  getUserFavoriteIds
+  getUserFavoriteIds,
+  clearFavorites
 };
+

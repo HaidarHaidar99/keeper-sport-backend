@@ -1249,33 +1249,105 @@ const getOrdersAdmin = async (req, res) => {
 
 /**
  * PATCH /api/admin/orders/:id/status
+ * Body: { status, message }
  */
 const updateOrderStatus = async (req, res) => {
   try {
     const { id } = req.params;
-    const { status, message } = req.body;
+    const { status, message } = req.body || {};
 
-    const validStatuses = ["pending", "accepted", "preparing", "on_delivery", "delivered", "rejected", "cancelled"];
-    if (!validStatuses.includes(status)) {
-      return res.status(400).json({ success: false, message: `Invalid status: ${status}` });
+    if (!id) {
+      return res.status(400).json({ success: false, message: "Order ID is required." });
     }
 
-    const updates = { status, updated_at: new Date().toISOString() };
-    if (status === "delivered") updates.delivered_at = new Date().toISOString();
-    if (status === "rejected") updates.rejected_at = new Date().toISOString();
-    if (status === "cancelled") updates.cancelled_at = new Date().toISOString();
-    if (message) updates.rejection_message = message;
+    // Fetch existing order to verify current status
+    const { data: order, error: findErr } = await supabase
+      .from("orders")
+      .select("id, status, order_number")
+      .eq("id", id)
+      .maybeSingle();
 
-    const { data, error } = await supabase
+    if (findErr || !order) {
+      return res.status(404).json({ success: false, message: "Order not found." });
+    }
+
+    // Strict sequential Admin transitions
+    const ADMIN_TRANSITIONS = {
+      pending: ["accepted", "rejected"],
+      accepted: ["preparing"],
+      preparing: ["on_delivery"],
+      on_delivery: ["delivered"],
+      delivered: [],
+      rejected: [],
+      cancelled: []
+    };
+
+    const allowed = ADMIN_TRANSITIONS[order.status] || [];
+    if (!allowed.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid status transition from '${order.status}' to '${status}'. Allowed next status: ${
+          allowed.length > 0 ? allowed.join(", ") : "None (this is a terminal status)"
+        }.`
+      });
+    }
+
+    const updates = {
+      status,
+      updated_at: new Date().toISOString()
+    };
+
+    if (status === "accepted") {
+      updates.accepted_at = new Date().toISOString();
+    } else if (status === "preparing") {
+      updates.preparing_at = new Date().toISOString();
+    } else if (status === "on_delivery") {
+      updates.on_delivery_at = new Date().toISOString();
+    } else if (status === "delivered") {
+      updates.delivered_at = new Date().toISOString();
+    } else if (status === "rejected") {
+      if (!message || !message.trim()) {
+        return res.status(400).json({
+          success: false,
+          message: "Rejection reason is required when rejecting an order."
+        });
+      }
+      updates.rejection_message = message.trim();
+      updates.rejected_at = new Date().toISOString();
+    }
+
+    const { data: updatedOrder, error: updateErr } = await supabase
       .from("orders")
       .update(updates)
       .eq("id", id)
-      .select("*")
+      .select("*, order_items(*)")
       .single();
 
-    if (error) throw error;
-    return res.json({ success: true, order: data, message: `Order status updated to ${status}.` });
+    if (updateErr) {
+      console.error("Error updating order status:", updateErr);
+      return res.status(500).json({ success: false, message: updateErr.message });
+    }
+
+    // Record in order status history
+    try {
+      await supabase.from("order_status_history").insert({
+        order_id: id,
+        from_status: order.status,
+        to_status: status,
+        changed_by: req.user?.id || null,
+        message: message ? message.trim() : `Status advanced from ${order.status} to ${status} by admin.`
+      });
+    } catch (histErr) {
+      console.warn("Status history insert warning:", histErr);
+    }
+
+    return res.json({
+      success: true,
+      order: updatedOrder,
+      message: `Order #${order.order_number} status updated to ${status}.`
+    });
   } catch (err) {
+    console.error("Error in updateOrderStatus:", err);
     return res.status(500).json({ success: false, message: err.message });
   }
 };
