@@ -1,20 +1,14 @@
+const crypto = require("crypto");
 const supabase = require("../config/supabase");
 
 /**
- * Toggle Favorite for Authenticated User
+ * Toggle Favorite for User or Guest
  * POST /api/favorites/toggle
- * Body: { productId }
+ * Body: { productId, guestIdentifier }
  */
 const toggleFavorite = async (req, res) => {
   try {
-    if (!req.user) {
-      return res.status(401).json({
-        success: false,
-        message: "Please sign in to save products to your favorites."
-      });
-    }
-
-    const { productId } = req.body;
+    const { productId } = req.body || {};
     if (!productId) {
       return res.status(400).json({
         success: false,
@@ -22,7 +16,12 @@ const toggleFavorite = async (req, res) => {
       });
     }
 
-    const userId = req.user.id;
+    const userId = req.user?.id || null;
+    let guestIdentifier = req.headers["x-guest-identifier"] || req.cookies?.keeper_guest_cart || req.body?.guestIdentifier || null;
+
+    if (!userId && !guestIdentifier) {
+      guestIdentifier = `guest_${crypto.randomUUID()}`;
+    }
 
     // Check if product actually exists
     const { data: product, error: prodErr } = await supabase
@@ -39,12 +38,18 @@ const toggleFavorite = async (req, res) => {
     }
 
     // Check if already favorited
-    const { data: existingFav, error: findErr } = await supabase
+    let findQuery = supabase
       .from("favorites")
       .select("id")
-      .eq("user_id", userId)
-      .eq("product_id", productId)
-      .maybeSingle();
+      .eq("product_id", productId);
+
+    if (userId) {
+      findQuery = findQuery.eq("user_id", userId);
+    } else {
+      findQuery = findQuery.eq("guest_identifier", guestIdentifier);
+    }
+
+    const { data: existingFav, error: findErr } = await findQuery.maybeSingle();
 
     if (findErr) {
       console.error("Error checking favorite:", findErr);
@@ -73,12 +78,15 @@ const toggleFavorite = async (req, res) => {
       isFavorited = false;
     } else {
       // Add favorite
+      const insertData = {
+        product_id: productId,
+        user_id: userId,
+        guest_identifier: userId ? null : guestIdentifier
+      };
+
       const { error: insertErr } = await supabase
         .from("favorites")
-        .insert({
-          user_id: userId,
-          product_id: productId
-        });
+        .insert(insertData);
 
       if (insertErr) {
         console.error("Error adding favorite:", insertErr);
@@ -91,15 +99,23 @@ const toggleFavorite = async (req, res) => {
     }
 
     // Get updated favorites count
-    const { count: favoritesCount } = await supabase
+    let countQuery = supabase
       .from("favorites")
-      .select("id", { count: "exact", head: true })
-      .eq("user_id", userId);
+      .select("id", { count: "exact", head: true });
+
+    if (userId) {
+      countQuery = countQuery.eq("user_id", userId);
+    } else {
+      countQuery = countQuery.eq("guest_identifier", guestIdentifier);
+    }
+
+    const { count: favoritesCount } = await countQuery;
 
     return res.json({
       success: true,
       isFavorited,
       favoritesCount: favoritesCount || 0,
+      guestIdentifier: userId ? null : guestIdentifier,
       message: isFavorited ? "Added to favorites." : "Removed from favorites."
     });
   } catch (err) {
@@ -112,34 +128,46 @@ const toggleFavorite = async (req, res) => {
 };
 
 /**
- * Get User's Favorited Product IDs
+ * Get User's or Guest's Favorited Product IDs
  * GET /api/favorites/ids
  */
 const getUserFavoriteIds = async (req, res) => {
   try {
-    if (!req.user) {
+    const userId = req.user?.id || null;
+    const guestIdentifier = req.headers["x-guest-identifier"] || req.cookies?.keeper_guest_cart || null;
+
+    if (!userId && !guestIdentifier) {
       return res.json({
         success: true,
-        favoriteIds: []
+        favoriteIds: [],
+        ids: []
       });
     }
 
-    const { data, error } = await supabase
-      .from("favorites")
-      .select("product_id")
-      .eq("user_id", req.user.id);
+    let query = supabase.from("favorites").select("product_id");
+    if (userId) {
+      query = query.eq("user_id", userId);
+    } else {
+      query = query.eq("guest_identifier", guestIdentifier);
+    }
+
+    const { data, error } = await query;
 
     if (error) {
-      console.error("Error fetching user favorite IDs:", error);
+      console.error("Error fetching favorite IDs:", error);
       return res.status(500).json({
         success: false,
         message: "Failed to fetch favorite items."
       });
     }
 
+    const ids = (data || []).map((f) => f.product_id);
+
     return res.json({
       success: true,
-      favoriteIds: (data || []).map((f) => f.product_id)
+      favoriteIds: ids,
+      ids: ids,
+      guestIdentifier: userId ? null : guestIdentifier
     });
   } catch (err) {
     console.error("Error in getUserFavoriteIds:", err);

@@ -1,14 +1,14 @@
 const express = require("express");
 const router = express.Router();
-const { optionalAuth, requireAuth } = require("../middleware/authMiddleware");
+const { optionalAuth } = require("../middleware/authMiddleware");
 const {
   getUserOrders,
   createOrder,
   getOrderById
 } = require("../controllers/orderController");
 
-// Customer orders list
-router.get("/", requireAuth, getUserOrders);
+// Customer & Guest orders list
+router.get("/", optionalAuth, getUserOrders);
 
 // Checkout / Place order (guests and authenticated)
 router.post("/", optionalAuth, createOrder);

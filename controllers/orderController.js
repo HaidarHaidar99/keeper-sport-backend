@@ -2,29 +2,70 @@ const supabase = require("../config/supabase");
 const crypto = require("crypto");
 
 /**
- * Get Authenticated Customer Orders
+ * Get Customer Orders (Authenticated User or Guest via Tokens)
  * GET /api/orders
  */
 const getUserOrders = async (req, res) => {
   try {
-    if (!req.user) {
-      return res.status(401).json({ success: false, message: "Authentication required." });
+    const userId = req.user?.id || null;
+    const rawTokensHeader = req.headers["x-guest-order-tokens"] || req.query.guestTokens || null;
+
+    if (userId) {
+      const { data: orders, error } = await supabase
+        .from("orders")
+        .select("*, order_items(*)")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false });
+
+      if (error) {
+        console.error("Error fetching user orders:", error);
+        return res.status(500).json({ success: false, message: "Failed to fetch orders." });
+      }
+
+      return res.json({
+        success: true,
+        orders: orders || []
+      });
     }
 
-    const { data: orders, error } = await supabase
+    // Guest Orders Flow (Cryptographically isolated via guest_access_token_hash)
+    let guestTokens = [];
+    if (rawTokensHeader) {
+      try {
+        const parsed = typeof rawTokensHeader === "string" ? JSON.parse(rawTokensHeader) : rawTokensHeader;
+        if (Array.isArray(parsed)) {
+          guestTokens = parsed.filter((t) => typeof t === "string" && t.length > 0);
+        }
+      } catch {
+        guestTokens = String(rawTokensHeader).split(",").map((t) => t.trim()).filter(Boolean);
+      }
+    }
+
+    if (guestTokens.length === 0) {
+      return res.json({
+        success: true,
+        orders: []
+      });
+    }
+
+    const tokenHashes = guestTokens.map((t) =>
+      crypto.createHash("sha256").update(t).digest("hex")
+    );
+
+    const { data: guestOrders, error: guestErr } = await supabase
       .from("orders")
       .select("*, order_items(*)")
-      .eq("user_id", req.user.id)
+      .in("guest_access_token_hash", tokenHashes)
       .order("created_at", { ascending: false });
 
-    if (error) {
-      console.error("Error fetching user orders:", error);
+    if (guestErr) {
+      console.error("Error fetching guest orders:", guestErr);
       return res.status(500).json({ success: false, message: "Failed to fetch orders." });
     }
 
     return res.json({
       success: true,
-      orders: orders || []
+      orders: guestOrders || []
     });
   } catch (err) {
     console.error("Unexpected error in getUserOrders:", err);
@@ -141,8 +182,9 @@ const createOrder = async (req, res) => {
     const userId = req.user?.id || null;
 
     let guestTokenHash = null;
+    let rawToken = null;
     if (!userId) {
-      const rawToken = crypto.randomBytes(24).toString("hex");
+      rawToken = crypto.randomBytes(24).toString("hex");
       guestTokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
     }
 
@@ -191,6 +233,24 @@ const createOrder = async (req, res) => {
       message: "Order placed by customer."
     });
 
+    // Clear cart for this customer/guest if this was a cart order
+    try {
+      const guestIdentifier = req.headers["x-guest-identifier"] || req.cookies?.keeper_guest_cart || null;
+      let cartIdToClear = null;
+      if (userId) {
+        const { data: uCart } = await supabase.from("carts").select("id").eq("user_id", userId).maybeSingle();
+        if (uCart) cartIdToClear = uCart.id;
+      } else if (guestIdentifier) {
+        const { data: gCart } = await supabase.from("carts").select("id").eq("guest_identifier", guestIdentifier).maybeSingle();
+        if (gCart) cartIdToClear = gCart.id;
+      }
+      if (cartIdToClear) {
+        await supabase.from("cart_items").delete().eq("cart_id", cartIdToClear);
+      }
+    } catch (clearErr) {
+      console.warn("Notice: could not clear cart after order:", clearErr);
+    }
+
     // Notify admins
     try {
       await supabase.from("notifications").insert({
@@ -212,9 +272,13 @@ const createOrder = async (req, res) => {
       order: {
         id: newOrder.id,
         order_number: newOrder.order_number,
+        subtotal: newOrder.subtotal,
+        delivery_fee: newOrder.delivery_fee,
         total: newOrder.total,
-        status: newOrder.status
-      }
+        status: newOrder.status,
+        guestAccessToken: rawToken || null
+      },
+      guestAccessToken: rawToken || null
     });
   } catch (err) {
     console.error("Unexpected error in createOrder:", err);

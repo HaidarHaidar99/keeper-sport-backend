@@ -1211,7 +1211,7 @@ const getOrdersAdmin = async (req, res) => {
       supabase.from("orders").select("id", { count: "exact", head: true }).eq("status", "cancelled")
     ]);
 
-    let query = supabase.from("orders").select("*", { count: "exact" });
+    let query = supabase.from("orders").select("*, order_items(*)", { count: "exact" });
 
     if (status) query = query.eq("status", status);
     if (search && search.trim()) {

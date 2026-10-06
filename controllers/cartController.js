@@ -19,7 +19,7 @@ const getGuestCookieOptions = () => {
  */
 const getOrCreateCart = async (req, res) => {
   const userId = req.user?.id || null;
-  let guestIdentifier = req.cookies?.[GUEST_CART_COOKIE] || req.headers["x-guest-identifier"] || null;
+  let guestIdentifier = req.headers["x-guest-identifier"] || req.cookies?.[GUEST_CART_COOKIE] || null;
 
   if (userId) {
     // Look for user's cart
@@ -30,7 +30,7 @@ const getOrCreateCart = async (req, res) => {
       .maybeSingle();
 
     if (userCart) {
-      return { cartId: userCart.id, isGuest: false };
+      return { cartId: userCart.id, isGuest: false, guestIdentifier: null };
     }
 
     // Check if there was a guest cart that should be merged or converted
@@ -53,8 +53,8 @@ const getOrCreateCart = async (req, res) => {
           .eq("id", guestCart.id);
 
         if (!upErr) {
-          res.clearCookie(GUEST_CART_COOKIE, { ...getGuestCookieOptions(), maxAge: 0 });
-          return { cartId: guestCart.id, isGuest: false };
+          if (res) res.clearCookie(GUEST_CART_COOKIE, { ...getGuestCookieOptions(), maxAge: 0 });
+          return { cartId: guestCart.id, isGuest: false, guestIdentifier: null };
         }
       }
     }
@@ -71,13 +71,13 @@ const getOrCreateCart = async (req, res) => {
       throw new Error("Could not initialize shopping cart.");
     }
 
-    return { cartId: newCart.id, isGuest: false };
+    return { cartId: newCart.id, isGuest: false, guestIdentifier: null };
   }
 
   // Guest flow
   if (!guestIdentifier) {
     guestIdentifier = `guest_${crypto.randomUUID()}`;
-    res.cookie(GUEST_CART_COOKIE, guestIdentifier, getGuestCookieOptions());
+    if (res) res.cookie(GUEST_CART_COOKIE, guestIdentifier, getGuestCookieOptions());
   }
 
   const { data: guestCart } = await supabase
@@ -105,16 +105,120 @@ const getOrCreateCart = async (req, res) => {
 };
 
 /**
- * Helper to calculate total count of items in a cart
+ * Helper to fetch formatted cart items, count, and subtotal
  */
-const calculateCartCount = async (cartId) => {
-  const { data: items } = await supabase
-    .from("cart_items")
-    .select("quantity")
-    .eq("cart_id", cartId);
+const fetchFormattedCartData = async (cartId) => {
+  if (!cartId) {
+    return { items: [], cartCount: 0, subtotal: 0 };
+  }
 
-  if (!items || items.length === 0) return 0;
-  return items.reduce((sum, item) => sum + (item.quantity || 1), 0);
+  const { data: items, error: itemsErr } = await supabase
+    .from("cart_items")
+    .select(`
+      id,
+      cart_id,
+      product_id,
+      selected_variant_id,
+      quantity,
+      printed_name,
+      printed_number,
+      badge,
+      created_at,
+      products (
+        id,
+        name,
+        slug,
+        base_price,
+        old_price,
+        stock_quantity,
+        is_active
+      ),
+      product_variants (
+        id,
+        size_value,
+        color_value,
+        price,
+        old_price,
+        stock_quantity
+      )
+    `)
+    .eq("cart_id", cartId)
+    .order("created_at", { ascending: false });
+
+  if (itemsErr) {
+    console.error("Error fetching cart items:", itemsErr);
+    return { items: [], cartCount: 0, subtotal: 0 };
+  }
+
+  const productIds = (items || []).map((i) => i.product_id).filter(Boolean);
+  let mediaMap = new Map();
+
+  if (productIds.length > 0) {
+    const { data: mediaList } = await supabase
+      .from("product_media")
+      .select("product_id, storage_path, alt_text, is_cover")
+      .in("product_id", productIds)
+      .order("is_cover", { ascending: false });
+
+    (mediaList || []).forEach((m) => {
+      if (!mediaMap.has(m.product_id)) {
+        mediaMap.set(m.product_id, m.storage_path);
+      }
+    });
+  }
+
+  let subtotal = 0;
+  let totalItems = 0;
+
+  const formattedItems = (items || []).map((item) => {
+    const prod = item.products;
+    const variant = item.product_variants;
+    const unitPrice = variant?.price ? parseFloat(variant.price) : parseFloat(prod?.base_price || 0);
+    const lineTotal = unitPrice * item.quantity;
+    subtotal += lineTotal;
+    totalItems += item.quantity;
+
+    return {
+      id: item.id,
+      productId: item.product_id,
+      variantId: item.selected_variant_id,
+      selectedVariantId: item.selected_variant_id,
+      productName: prod?.name || "Product",
+      productSlug: prod?.slug || "",
+      coverImage: mediaMap.get(item.product_id) || null,
+      unitPrice,
+      quantity: item.quantity,
+      lineTotal: parseFloat(lineTotal.toFixed(2)),
+      product: prod
+        ? {
+            id: prod.id,
+            name: prod.name,
+            slug: prod.slug,
+            base_price: prod.base_price,
+            primaryImage: mediaMap.get(item.product_id) || null,
+            stock_quantity: prod.stock_quantity
+          }
+        : null,
+      variant: variant
+        ? {
+            size: variant.size_value,
+            color: variant.color_value
+          }
+        : null,
+      selectedSize: variant?.size_value || null,
+      selectedColor: variant?.color_value || null,
+      printedName: item.printed_name,
+      printedNumber: item.printed_number,
+      badge: item.badge,
+      inStock: prod ? prod.stock_quantity >= item.quantity : false
+    };
+  });
+
+  return {
+    items: formattedItems,
+    cartCount: totalItems,
+    subtotal: parseFloat(subtotal.toFixed(2))
+  };
 };
 
 /**
@@ -188,7 +292,8 @@ const addToCart = async (req, res) => {
     }
 
     // 3. Retrieve or create cart
-    const { cartId } = await getOrCreateCart(req, res);
+    const cartInfo = await getOrCreateCart(req, res);
+    const cartId = cartInfo.cartId;
 
     // 4. Check if exact item exists in cart
     let query = supabase
@@ -235,7 +340,6 @@ const addToCart = async (req, res) => {
 
     if (existingItem) {
       finalQuantity = existingItem.quantity + addQty;
-      // Cap at available stock
       if (finalQuantity > product.stock_quantity) {
         finalQuantity = product.stock_quantity;
       }
@@ -281,14 +385,23 @@ const addToCart = async (req, res) => {
       }
     }
 
-    // 5. Calculate updated cart count
-    const cartCount = await calculateCartCount(cartId);
+    // 5. Calculate updated cart data
+    const cartData = await fetchFormattedCartData(cartId);
 
     return res.json({
       success: true,
       message: `Added "${product.name}" to your cart.`,
-      cartCount,
-      addedQuantity: addQty
+      cartCount: cartData.cartCount,
+      addedQuantity: addQty,
+      guestIdentifier: cartInfo.guestIdentifier || null,
+      cart: {
+        id: cartId,
+        items: cartData.items,
+        cartCount: cartData.cartCount,
+        subtotal: cartData.subtotal
+      },
+      items: cartData.items,
+      subtotal: cartData.subtotal
     });
   } catch (err) {
     console.error("Error in addToCart:", err);
@@ -306,12 +419,12 @@ const addToCart = async (req, res) => {
 const getCart = async (req, res) => {
   try {
     const userId = req.user?.id || null;
-    const guestIdentifier = req.cookies?.[GUEST_CART_COOKIE] || req.headers["x-guest-identifier"] || null;
+    const guestIdentifier = req.headers["x-guest-identifier"] || req.cookies?.[GUEST_CART_COOKIE] || null;
 
     if (!userId && !guestIdentifier) {
       return res.json({
         success: true,
-        cart: null,
+        cart: { id: null, items: [], cartCount: 0, subtotal: 0 },
         items: [],
         cartCount: 0,
         subtotal: 0
@@ -331,115 +444,28 @@ const getCart = async (req, res) => {
     if (!cart) {
       return res.json({
         success: true,
-        cart: null,
+        cart: { id: null, items: [], cartCount: 0, subtotal: 0 },
         items: [],
         cartCount: 0,
-        subtotal: 0
+        subtotal: 0,
+        guestIdentifier
       });
     }
 
-    // Fetch cart items with product, media, and variant
-    const { data: items, error: itemsErr } = await supabase
-      .from("cart_items")
-      .select(`
-        id,
-        cart_id,
-        product_id,
-        selected_variant_id,
-        quantity,
-        printed_name,
-        printed_number,
-        badge,
-        created_at,
-        products (
-          id,
-          name,
-          slug,
-          base_price,
-          old_price,
-          stock_quantity,
-          is_active
-        ),
-        product_variants (
-          id,
-          size_value,
-          color_value,
-          price,
-          old_price,
-          stock_quantity
-        )
-      `)
-      .eq("cart_id", cart.id)
-      .order("created_at", { ascending: false });
-
-    if (itemsErr) {
-      console.error("Error fetching cart items:", itemsErr);
-      return res.status(500).json({
-        success: false,
-        message: "Failed to retrieve cart items."
-      });
-    }
-
-    // Fetch product cover media for items
-    const productIds = (items || []).map((i) => i.product_id).filter(Boolean);
-    let mediaMap = new Map();
-
-    if (productIds.length > 0) {
-      const { data: mediaList } = await supabase
-        .from("product_media")
-        .select("product_id, storage_path, alt_text, is_cover")
-        .in("product_id", productIds)
-        .order("is_cover", { ascending: false });
-
-      (mediaList || []).forEach((m) => {
-        if (!mediaMap.has(m.product_id)) {
-          mediaMap.set(m.product_id, m.storage_path);
-        }
-      });
-    }
-
-    let subtotal = 0;
-    let totalItems = 0;
-
-    const formattedItems = (items || []).map((item) => {
-      const prod = item.products;
-      const variant = item.product_variants;
-      const unitPrice = variant?.price ? parseFloat(variant.price) : parseFloat(prod?.base_price || 0);
-      const lineTotal = unitPrice * item.quantity;
-      subtotal += lineTotal;
-      totalItems += item.quantity;
-
-      return {
-        id: item.id,
-        productId: item.product_id,
-        variantId: item.selected_variant_id,
-        productName: prod?.name || "Product",
-        productSlug: prod?.slug || "",
-        coverImage: mediaMap.get(item.product_id) || null,
-        unitPrice,
-        quantity: item.quantity,
-        lineTotal: parseFloat(lineTotal.toFixed(2)),
-        variant: variant
-          ? {
-              size: variant.size_value,
-              color: variant.color_value
-            }
-          : null,
-        customization: {
-          printedName: item.printed_name,
-          printedNumber: item.printed_number,
-          badge: item.badge
-        },
-        inStock: prod ? prod.stock_quantity >= item.quantity : false
-      };
-    });
+    const cartData = await fetchFormattedCartData(cart.id);
 
     return res.json({
       success: true,
-      cart: { id: cart.id },
-      items: formattedItems,
-      cartCount: totalItems,
-      subtotal: parseFloat(subtotal.toFixed(2))
+      cart: {
+        id: cart.id,
+        items: cartData.items,
+        cartCount: cartData.cartCount,
+        subtotal: cartData.subtotal
+      },
+      items: cartData.items,
+      cartCount: cartData.cartCount,
+      subtotal: cartData.subtotal,
+      guestIdentifier
     });
   } catch (err) {
     console.error("Error in getCart:", err);
@@ -450,8 +476,141 @@ const getCart = async (req, res) => {
   }
 };
 
+/**
+ * Update Cart Item Quantity
+ * PUT /api/cart/items/:itemId
+ * Body: { quantity }
+ */
+const updateCartItemQuantity = async (req, res) => {
+  try {
+    const { itemId } = req.params;
+    const { quantity } = req.body;
+    const newQty = parseInt(quantity, 10);
+
+    const userId = req.user?.id || null;
+    const guestIdentifier = req.headers["x-guest-identifier"] || req.cookies?.[GUEST_CART_COOKIE] || null;
+
+    if (!userId && !guestIdentifier) {
+      return res.status(400).json({ success: false, message: "Cart identifier required." });
+    }
+
+    // Verify item belongs to this cart
+    const { data: cartItem, error: fetchErr } = await supabase
+      .from("cart_items")
+      .select("id, cart_id, product_id, quantity, carts!inner(id, user_id, guest_identifier)")
+      .eq("id", itemId)
+      .maybeSingle();
+
+    if (fetchErr || !cartItem) {
+      return res.status(404).json({ success: false, message: "Cart item not found." });
+    }
+
+    const cart = cartItem.carts;
+    const isOwner = (userId && cart.user_id === userId) || (!userId && cart.guest_identifier === guestIdentifier);
+
+    if (!isOwner) {
+      return res.status(403).json({ success: false, message: "Unauthorized access to cart item." });
+    }
+
+    if (isNaN(newQty) || newQty <= 0) {
+      // Remove item if quantity is 0 or less
+      await supabase.from("cart_items").delete().eq("id", itemId);
+    } else {
+      // Check stock
+      const { data: prod } = await supabase
+        .from("products")
+        .select("stock_quantity")
+        .eq("id", cartItem.product_id)
+        .maybeSingle();
+
+      const finalQty = prod ? Math.min(newQty, prod.stock_quantity) : newQty;
+
+      await supabase
+        .from("cart_items")
+        .update({ quantity: finalQty, updated_at: new Date().toISOString() })
+        .eq("id", itemId);
+    }
+
+    const cartData = await fetchFormattedCartData(cart.id);
+
+    return res.json({
+      success: true,
+      message: "Cart updated.",
+      cart: {
+        id: cart.id,
+        items: cartData.items,
+        cartCount: cartData.cartCount,
+        subtotal: cartData.subtotal
+      },
+      items: cartData.items,
+      cartCount: cartData.cartCount,
+      subtotal: cartData.subtotal
+    });
+  } catch (err) {
+    console.error("Error updating cart item:", err);
+    return res.status(500).json({ success: false, message: "Failed to update item quantity." });
+  }
+};
+
+/**
+ * Remove Cart Item
+ * DELETE /api/cart/items/:itemId
+ */
+const removeCartItem = async (req, res) => {
+  try {
+    const { itemId } = req.params;
+    const userId = req.user?.id || null;
+    const guestIdentifier = req.headers["x-guest-identifier"] || req.cookies?.[GUEST_CART_COOKIE] || null;
+
+    if (!userId && !guestIdentifier) {
+      return res.status(400).json({ success: false, message: "Cart identifier required." });
+    }
+
+    const { data: cartItem, error: fetchErr } = await supabase
+      .from("cart_items")
+      .select("id, cart_id, carts!inner(id, user_id, guest_identifier)")
+      .eq("id", itemId)
+      .maybeSingle();
+
+    if (fetchErr || !cartItem) {
+      return res.status(404).json({ success: false, message: "Cart item not found." });
+    }
+
+    const cart = cartItem.carts;
+    const isOwner = (userId && cart.user_id === userId) || (!userId && cart.guest_identifier === guestIdentifier);
+
+    if (!isOwner) {
+      return res.status(403).json({ success: false, message: "Unauthorized access to cart item." });
+    }
+
+    await supabase.from("cart_items").delete().eq("id", itemId);
+
+    const cartData = await fetchFormattedCartData(cart.id);
+
+    return res.json({
+      success: true,
+      message: "Item removed from cart.",
+      cart: {
+        id: cart.id,
+        items: cartData.items,
+        cartCount: cartData.cartCount,
+        subtotal: cartData.subtotal
+      },
+      items: cartData.items,
+      cartCount: cartData.cartCount,
+      subtotal: cartData.subtotal
+    });
+  } catch (err) {
+    console.error("Error removing cart item:", err);
+    return res.status(500).json({ success: false, message: "Failed to remove item from cart." });
+  }
+};
+
 module.exports = {
   addToCart,
   getCart,
+  updateCartItemQuantity,
+  removeCartItem,
+  fetchFormattedCartData,
   GUEST_CART_COOKIE
 };

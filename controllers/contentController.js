@@ -158,13 +158,19 @@ const getCategories = async (req, res) => {
   }
 };
 
+const crypto = require("crypto");
+
 /**
  * Get User Dynamic Counts for Navbar (Cart, Favorites, Orders, Notifications)
  * GET /api/user/counts
  */
 const getUserCounts = async (req, res) => {
   try {
-    if (!req.user) {
+    const userId = req.user?.id || null;
+    const guestIdentifier = req.headers["x-guest-identifier"] || req.cookies?.keeper_guest_cart || null;
+    const rawTokensHeader = req.headers["x-guest-order-tokens"] || null;
+
+    if (!userId && !guestIdentifier) {
       return res.json({
         success: true,
         counts: {
@@ -176,28 +182,93 @@ const getUserCounts = async (req, res) => {
       });
     }
 
-    const userId = req.user.id;
+    if (userId) {
+      // Authenticated User counts
+      const [favRes, ordersRes, cartRes, notifRes] = await Promise.all([
+        supabase
+          .from("favorites")
+          .select("id", { count: "exact", head: true })
+          .eq("user_id", userId),
 
-    // Run count queries in parallel
-    const [favRes, ordersRes, cartRes, notifRes] = await Promise.all([
-      // Favorites count
+        supabase
+          .from("orders")
+          .select("id", { count: "exact", head: true })
+          .eq("user_id", userId),
+
+        (async () => {
+          const { data: cart } = await supabase
+            .from("carts")
+            .select("id")
+            .eq("user_id", userId)
+            .maybeSingle();
+
+          if (!cart) return 0;
+
+          const { data: items } = await supabase
+            .from("cart_items")
+            .select("quantity")
+            .eq("cart_id", cart.id);
+
+          if (!items || items.length === 0) return 0;
+          return items.reduce((sum, i) => sum + (i.quantity || 1), 0);
+        })(),
+
+        supabase
+          .from("notifications")
+          .select("id", { count: "exact", head: true })
+          .eq("recipient_user_id", userId)
+          .eq("is_read", false)
+      ]);
+
+      return res.json({
+        success: true,
+        counts: {
+          favorites: favRes.count || 0,
+          orders: ordersRes.count || 0,
+          cart: typeof cartRes === "number" ? cartRes : 0,
+          notifications: notifRes.count || 0
+        }
+      });
+    }
+
+    // Guest counts
+    let guestTokens = [];
+    if (rawTokensHeader) {
+      try {
+        const parsed = typeof rawTokensHeader === "string" ? JSON.parse(rawTokensHeader) : rawTokensHeader;
+        if (Array.isArray(parsed)) {
+          guestTokens = parsed.filter((t) => typeof t === "string" && t.length > 0);
+        }
+      } catch {
+        // May be a comma separated list
+        guestTokens = String(rawTokensHeader).split(",").map((t) => t.trim()).filter(Boolean);
+      }
+    }
+
+    const tokenHashes = guestTokens.map((t) =>
+      crypto.createHash("sha256").update(t).digest("hex")
+    );
+
+    const [favRes, ordersRes, cartRes] = await Promise.all([
       supabase
         .from("favorites")
         .select("id", { count: "exact", head: true })
-        .eq("user_id", userId),
+        .eq("guest_identifier", guestIdentifier),
 
-      // Orders count
-      supabase
-        .from("orders")
-        .select("id", { count: "exact", head: true })
-        .eq("user_id", userId),
+      (async () => {
+        if (tokenHashes.length === 0) return 0;
+        const { count } = await supabase
+          .from("orders")
+          .select("id", { count: "exact", head: true })
+          .in("guest_access_token_hash", tokenHashes);
+        return count || 0;
+      })(),
 
-      // Cart items count
       (async () => {
         const { data: cart } = await supabase
           .from("carts")
           .select("id")
-          .eq("user_id", userId)
+          .eq("guest_identifier", guestIdentifier)
           .maybeSingle();
 
         if (!cart) return 0;
@@ -209,23 +280,16 @@ const getUserCounts = async (req, res) => {
 
         if (!items || items.length === 0) return 0;
         return items.reduce((sum, i) => sum + (i.quantity || 1), 0);
-      })(),
-
-      // Unread notifications count
-      supabase
-        .from("notifications")
-        .select("id", { count: "exact", head: true })
-        .eq("recipient_user_id", userId)
-        .eq("is_read", false)
+      })()
     ]);
 
     return res.json({
       success: true,
       counts: {
         favorites: favRes.count || 0,
-        orders: ordersRes.count || 0,
+        orders: typeof ordersRes === "number" ? ordersRes : 0,
         cart: typeof cartRes === "number" ? cartRes : 0,
-        notifications: notifRes.count || 0
+        notifications: 0
       }
     });
   } catch (err) {
