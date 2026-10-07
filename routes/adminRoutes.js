@@ -66,4 +66,12 @@ router.get("/notifications", adminController.getNotificationsAdmin);
 router.patch("/notifications/:id/read", adminController.markNotificationRead);
 router.post("/notifications/mark-all-read", adminController.markAllNotificationsRead);
 
+// Contact Messages / Forms
+router.get("/forms", adminController.getContactFormsAdmin);
+router.patch("/forms/:id/read", adminController.markContactFormReadAdmin);
+router.delete("/forms/:id", adminController.deleteContactFormAdmin);
+router.get("/contact-messages", adminController.getContactFormsAdmin);
+router.patch("/contact-messages/:id/read", adminController.markContactFormReadAdmin);
+router.delete("/contact-messages/:id", adminController.deleteContactFormAdmin);
+
 module.exports = router;

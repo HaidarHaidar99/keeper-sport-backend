@@ -1,5 +1,6 @@
 const crypto = require("crypto");
 const supabase = require("../config/supabase");
+const { getCategoryImagesMap, setCategoryImage, removeCategoryImage } = require("../utils/categoryStorage");
 
 const BUCKET_NAME = "keeper-media";
 
@@ -55,7 +56,8 @@ const getDashboardOverview = async (req, res) => {
       recentOrdersRes,
       recentUsersRes,
       lowStockItemsRes,
-      recentNotifsRes
+      recentNotifsRes,
+      unreadFormsRes
     ] = await Promise.all([
       // Total Users
       supabase.from("users").select("id", { count: "exact", head: true }),
@@ -80,7 +82,9 @@ const getDashboardOverview = async (req, res) => {
       // Low stock product items
       supabase.from("products").select("id, name, slug, stock_quantity, base_price, is_active").lte("stock_quantity", lowStockThreshold).order("stock_quantity", { ascending: true }).limit(6),
       // Recent notifications (limit 5)
-      supabase.from("notifications").select("id, title, message, type, is_read, created_at").eq("recipient_type", "admin").order("created_at", { ascending: false }).limit(5)
+      supabase.from("notifications").select("id, title, message, type, is_read, created_at").eq("recipient_type", "admin").order("created_at", { ascending: false }).limit(5),
+      // Unread contact form notifications
+      supabase.from("notifications").select("id", { count: "exact", head: true }).eq("recipient_type", "admin").in("reference_type", ["contact_message", "contact"]).eq("is_read", false)
     ]);
 
     return res.json({
@@ -93,6 +97,7 @@ const getDashboardOverview = async (req, res) => {
         lowStockProducts: lowStockProductsRes.count || 0,
         outOfStockProducts: outOfStockProductsRes.count || 0,
         unreadNotifications: unreadNotifRes.count || 0,
+        unreadForms: unreadFormsRes.count || 0,
         totalReviews: reviewsCountRes.count || 0,
         lowStockThreshold
       },
@@ -1046,13 +1051,15 @@ const getCategoriesAdmin = async (req, res) => {
 
     if (error) throw error;
 
+    const imageMap = await getCategoryImagesMap().catch(() => ({}));
+
     const formatted = (categories || []).map((cat) => ({
       id: cat.id,
       name: cat.name,
       slug: cat.slug,
       isActive: cat.is_active,
       sortOrder: cat.sort_order,
-      imagePath: cat.image_path || null,
+      imagePath: cat.image_path || imageMap[cat.id] || null,
       createdAt: cat.created_at,
       productCount: (cat.products || []).length
     }));
@@ -1109,7 +1116,20 @@ const createCategory = async (req, res) => {
     }
 
     if (error) throw error;
-    return res.json({ success: true, category: data, message: `Category "${data.name}" created.` });
+
+    // Persist to storage map
+    if (image_path !== undefined && data && data.id) {
+      await setCategoryImage(data.id, image_path ? image_path.trim() : null);
+    }
+
+    return res.json({
+      success: true,
+      category: {
+        ...data,
+        imagePath: image_path ? image_path.trim() : null
+      },
+      message: `Category "${data.name}" created.`
+    });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
   }
@@ -1152,7 +1172,22 @@ const updateCategory = async (req, res) => {
     }
 
     if (error) throw error;
-    return res.json({ success: true, category: data, message: `Category updated.` });
+
+    // Persist to storage map
+    if (image_path !== undefined) {
+      await setCategoryImage(id, image_path ? image_path.trim() : null);
+    }
+
+    const currentMap = await getCategoryImagesMap().catch(() => ({}));
+
+    return res.json({
+      success: true,
+      category: {
+        ...data,
+        imagePath: image_path !== undefined ? (image_path ? image_path.trim() : null) : (data?.image_path || currentMap[id] || null)
+      },
+      message: `Category updated.`
+    });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
   }
@@ -1180,6 +1215,9 @@ const deleteCategory = async (req, res) => {
 
     const { error } = await supabase.from("categories").delete().eq("id", id);
     if (error) throw error;
+
+    // Remove from storage map
+    await removeCategoryImage(id);
 
     return res.json({ success: true, message: "Category deleted successfully." });
   } catch (err) {
@@ -1613,6 +1651,165 @@ const markAllNotificationsRead = async (req, res) => {
   }
 };
 
+// =============================================================================
+// CONTACT MESSAGES / FORMS
+// =============================================================================
+
+/**
+ * GET /api/admin/forms
+ */
+const getContactFormsAdmin = async (req, res) => {
+  try {
+    const { page = 1, limit = 20, search, status } = req.query;
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+
+    // Fetch contact messages
+    let query = supabase
+      .from("contact_messages")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (search && search.trim()) {
+      const q = search.trim();
+      query = query.or(`full_name.ilike.%${q}%,email.ilike.%${q}%,phone.ilike.%${q}%,message.ilike.%${q}%`);
+    }
+
+    const { data: messages, error } = await query;
+    if (error) throw error;
+
+    // Fetch notifications matching contact messages to get read statuses
+    const messageIds = (messages || []).map((m) => m.id);
+    let notificationsMap = new Map();
+    if (messageIds.length > 0) {
+      const { data: notifs } = await supabase
+        .from("notifications")
+        .select("reference_id, is_read, read_at")
+        .in("reference_id", messageIds);
+
+      if (notifs) {
+        notifs.forEach((n) => {
+          notificationsMap.set(n.reference_id, {
+            is_read: Boolean(n.is_read),
+            read_at: n.read_at
+          });
+        });
+      }
+    }
+
+    // Merge read status
+    const allItems = (messages || []).map((m) => {
+      const notif = notificationsMap.get(m.id);
+      const isRead = notif ? notif.is_read : false;
+      const readAt = notif ? notif.read_at : null;
+      return {
+        id: m.id,
+        userId: m.user_id,
+        fullName: m.full_name,
+        email: m.email,
+        phone: m.phone || null,
+        message: m.message,
+        createdAt: m.created_at,
+        isRead,
+        readAt
+      };
+    });
+
+    const totalCount = allItems.length;
+    const unreadCount = allItems.filter((item) => !item.isRead).length;
+    const readCount = totalCount - unreadCount;
+
+    // Filter by status if specified
+    let filteredItems = allItems;
+    if (status === "unread" || status === "new") {
+      filteredItems = allItems.filter((item) => !item.isRead);
+    } else if (status === "read") {
+      filteredItems = allItems.filter((item) => item.isRead);
+    }
+
+    // Paginate
+    const startIndex = (pageNum - 1) * limitNum;
+    const paginatedItems = filteredItems.slice(startIndex, startIndex + limitNum);
+
+    return res.json({
+      success: true,
+      forms: paginatedItems,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total: filteredItems.length,
+        totalPages: Math.ceil(filteredItems.length / limitNum) || 1
+      },
+      stats: {
+        total: totalCount,
+        unread: unreadCount,
+        read: readCount
+      }
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * PATCH /api/admin/forms/:id/read
+ */
+const markContactFormReadAdmin = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const now = new Date().toISOString();
+
+    // Check if notification exists for this contact message
+    const { data: existingNotif } = await supabase
+      .from("notifications")
+      .select("id")
+      .eq("reference_id", id)
+      .maybeSingle();
+
+    if (existingNotif) {
+      await supabase
+        .from("notifications")
+        .update({ is_read: true, read_at: now })
+        .eq("reference_id", id);
+    } else {
+      await supabase.from("notifications").insert({
+        recipient_type: "admin",
+        type: "contact",
+        title: "Contact Form Read",
+        message: `Message ${id} marked read`,
+        reference_type: "contact_message",
+        reference_id: id,
+        is_read: true,
+        read_at: now
+      });
+    }
+
+    return res.json({ success: true, message: "Contact message marked as read." });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * DELETE /api/admin/forms/:id
+ */
+const deleteContactFormAdmin = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Delete associated notifications first
+    await supabase.from("notifications").delete().eq("reference_id", id);
+
+    // Delete message
+    const { error } = await supabase.from("contact_messages").delete().eq("id", id);
+    if (error) throw error;
+
+    return res.json({ success: true, message: "Contact message deleted successfully." });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 module.exports = {
   getDashboardOverview,
   uploadMedia,
@@ -1654,5 +1851,9 @@ module.exports = {
   // Notifications
   getNotificationsAdmin,
   markNotificationRead,
-  markAllNotificationsRead
+  markAllNotificationsRead,
+  // Contact Forms
+  getContactFormsAdmin,
+  markContactFormReadAdmin,
+  deleteContactFormAdmin
 };

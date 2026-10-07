@@ -113,6 +113,8 @@ const getOfferBars = async (req, res) => {
   }
 };
 
+const { getCategoryImagesMap } = require("../utils/categoryStorage");
+
 /**
  * Get Active Categories
  * GET /api/categories
@@ -145,9 +147,16 @@ const getCategories = async (req, res) => {
       });
     }
 
+    // Merge images from persistent storage map
+    const imageMap = await getCategoryImagesMap().catch(() => ({}));
+    const formattedCategories = (categories || []).map((c) => ({
+      ...c,
+      image_path: c.image_path || imageMap[c.id] || null
+    }));
+
     return res.json({
       success: true,
-      categories: categories || []
+      categories: formattedCategories
     });
   } catch (err) {
     console.error("Unexpected error in getCategories:", err);

@@ -229,7 +229,7 @@ const fetchFormattedCartData = async (cartId) => {
 const addToCart = async (req, res) => {
   try {
     const productId = req.body.productId || req.body.product_id;
-    const { variantId, quantity = 1, printedName, printedNumber, badge } = req.body;
+    const { variantId, size, color, quantity = 1, printedName, printedNumber, badge } = req.body;
 
     if (!productId) {
       return res.status(400).json({
@@ -240,7 +240,7 @@ const addToCart = async (req, res) => {
 
     const addQty = Math.max(1, parseInt(quantity, 10) || 1);
 
-    // 1. Verify product exists, is active, and has stock
+    // 1. Verify product exists and is active
     const { data: product, error: prodErr } = await supabase
       .from("products")
       .select("id, name, base_price, stock_quantity, is_active")
@@ -261,35 +261,61 @@ const addToCart = async (req, res) => {
       });
     }
 
-    if (product.stock_quantity <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: "This product is currently out of stock."
+    // 2. Fetch variants for this product
+    const { data: variants } = await supabase
+      .from("product_variants")
+      .select("id, size_value, color_value, stock_quantity, is_active")
+      .eq("product_id", productId)
+      .eq("is_active", true);
+
+    let resolvedVariantId = variantId || null;
+    let availableStock = product.stock_quantity;
+
+    if (variants && variants.length > 0) {
+      const availSizes = Array.from(new Set(variants.map((v) => v.size_value).filter(Boolean)));
+      const availColors = Array.from(new Set(variants.map((v) => v.color_value).filter(Boolean)));
+
+      // Required size check if variants have size options
+      if (availSizes.length > 0 && !size && !variantId) {
+        return res.status(400).json({
+          success: false,
+          message: "Please select a size."
+        });
+      }
+
+      // Required color check if variants have color options
+      if (availColors.length > 0 && !color && !variantId) {
+        return res.status(400).json({
+          success: false,
+          message: "Please select a color."
+        });
+      }
+
+      // Match exact variant
+      const matched = variants.find((v) => {
+        if (variantId) return v.id === variantId;
+        const sizeMatch = !availSizes.length || v.size_value === size;
+        const colorMatch = !availColors.length || v.color_value === color;
+        return sizeMatch && colorMatch;
       });
+
+      if (!matched) {
+        return res.status(400).json({
+          success: false,
+          message: "Selected product option is not available."
+        });
+      }
+
+      resolvedVariantId = matched.id;
+      availableStock = matched.stock_quantity;
     }
 
-    // 2. If variant provided, verify variant
-    if (variantId) {
-      const { data: variant, error: varErr } = await supabase
-        .from("product_variants")
-        .select("id, stock_quantity, is_active")
-        .eq("id", variantId)
-        .eq("product_id", productId)
-        .maybeSingle();
-
-      if (varErr || !variant) {
-        return res.status(400).json({
-          success: false,
-          message: "Selected product variant not found."
-        });
-      }
-
-      if (!variant.is_active || variant.stock_quantity <= 0) {
-        return res.status(400).json({
-          success: false,
-          message: "Selected variant is out of stock."
-        });
-      }
+    // Check if available stock is zero
+    if (availableStock <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: resolvedVariantId ? "Selected option is out of stock." : "This product is out of stock."
+      });
     }
 
     // 3. Retrieve or create cart
@@ -303,8 +329,8 @@ const addToCart = async (req, res) => {
       .eq("cart_id", cartId)
       .eq("product_id", productId);
 
-    if (variantId) {
-      query = query.eq("selected_variant_id", variantId);
+    if (resolvedVariantId) {
+      query = query.eq("selected_variant_id", resolvedVariantId);
     } else {
       query = query.is("selected_variant_id", null);
     }
@@ -337,14 +363,20 @@ const addToCart = async (req, res) => {
       });
     }
 
-    let finalQuantity = addQty;
+    const currentCartQty = existingItem ? existingItem.quantity : 0;
+    const requestedTotalQty = currentCartQty + addQty;
+
+    // Strict stock enforcement: existing Cart quantity + newly requested quantity cannot exceed stock
+    if (requestedTotalQty > availableStock) {
+      return res.status(400).json({
+        success: false,
+        message: `Only ${availableStock} items available in stock.`
+      });
+    }
+
+    let finalQuantity = requestedTotalQty;
 
     if (existingItem) {
-      finalQuantity = existingItem.quantity + addQty;
-      if (finalQuantity > product.stock_quantity) {
-        finalQuantity = product.stock_quantity;
-      }
-
       const { error: updateErr } = await supabase
         .from("cart_items")
         .update({
@@ -361,16 +393,12 @@ const addToCart = async (req, res) => {
         });
       }
     } else {
-      if (finalQuantity > product.stock_quantity) {
-        finalQuantity = product.stock_quantity;
-      }
-
       const { error: insertErr } = await supabase
         .from("cart_items")
         .insert({
           cart_id: cartId,
           product_id: productId,
-          selected_variant_id: variantId || null,
+          selected_variant_id: resolvedVariantId,
           quantity: finalQuantity,
           printed_name: printedName || null,
           printed_number: printedNumber || null,
@@ -498,7 +526,7 @@ const updateCartItemQuantity = async (req, res) => {
     // Verify item belongs to this cart
     const { data: cartItem, error: fetchErr } = await supabase
       .from("cart_items")
-      .select("id, cart_id, product_id, quantity, carts!inner(id, user_id, guest_identifier)")
+      .select("id, cart_id, product_id, selected_variant_id, quantity, carts!inner(id, user_id, guest_identifier)")
       .eq("id", itemId)
       .maybeSingle();
 
@@ -517,18 +545,41 @@ const updateCartItemQuantity = async (req, res) => {
       // Remove item if quantity is 0 or less
       await supabase.from("cart_items").delete().eq("id", itemId);
     } else {
-      // Check stock
-      const { data: prod } = await supabase
-        .from("products")
-        .select("stock_quantity")
-        .eq("id", cartItem.product_id)
-        .maybeSingle();
+      // Check stock against variant or product
+      let availableStock = 0;
+      if (cartItem.selected_variant_id) {
+        const { data: variant } = await supabase
+          .from("product_variants")
+          .select("stock_quantity")
+          .eq("id", cartItem.selected_variant_id)
+          .maybeSingle();
+        availableStock = variant ? variant.stock_quantity : 0;
+      } else {
+        const { data: prod } = await supabase
+          .from("products")
+          .select("stock_quantity")
+          .eq("id", cartItem.product_id)
+          .maybeSingle();
+        availableStock = prod ? prod.stock_quantity : 0;
+      }
 
-      const finalQty = prod ? Math.min(newQty, prod.stock_quantity) : newQty;
+      if (availableStock <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Out of stock."
+        });
+      }
+
+      if (newQty > availableStock) {
+        return res.status(400).json({
+          success: false,
+          message: `Only ${availableStock} items available in stock.`
+        });
+      }
 
       await supabase
         .from("cart_items")
-        .update({ quantity: finalQty, updated_at: new Date().toISOString() })
+        .update({ quantity: newQty, updated_at: new Date().toISOString() })
         .eq("id", itemId);
     }
 

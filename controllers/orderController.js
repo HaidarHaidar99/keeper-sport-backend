@@ -117,7 +117,7 @@ const createOrder = async (req, res) => {
     let subtotal = 0;
     const preparedItems = [];
 
-    // Verify each item against real products and compute totals
+    // Verify each item against real products and compute totals with strict stock revalidation
     for (const item of items) {
       const pId = item.productId || item.product_id;
       if (!pId) continue;
@@ -130,6 +130,65 @@ const createOrder = async (req, res) => {
 
       if (!product) continue;
 
+      const qty = Math.max(1, parseInt(item.quantity, 10) || 1);
+
+      // Resolve variant if applicable
+      let variant = null;
+      const vId = item.variantId || item.selectedVariantId || item.selected_variant_id;
+      if (vId) {
+        const { data: vData } = await supabase
+          .from("product_variants")
+          .select("*")
+          .eq("id", vId)
+          .maybeSingle();
+        variant = vData;
+      } else if (item.size || item.color) {
+        let vQuery = supabase
+          .from("product_variants")
+          .select("*")
+          .eq("product_id", product.id)
+          .eq("is_active", true);
+        if (item.size) vQuery = vQuery.eq("size_value", item.size);
+        if (item.color) vQuery = vQuery.eq("color_value", item.color);
+        const { data: vList } = await vQuery.limit(1);
+        variant = vList?.[0] || null;
+      }
+
+      // STRICT CHECKOUT-TIME STOCK REVALIDATION
+      if (variant) {
+        const variantDesc = [
+          variant.size_value ? `Size ${variant.size_value}` : null,
+          variant.color_value ? `Color ${variant.color_value}` : null
+        ].filter(Boolean).join(" / ");
+        const variantSuffix = variantDesc ? ` — ${variantDesc}` : "";
+
+        if (variant.stock_quantity <= 0) {
+          return res.status(400).json({
+            success: false,
+            message: `"${product.name}${variantSuffix}" is currently out of stock.`
+          });
+        }
+        if (qty > variant.stock_quantity) {
+          return res.status(400).json({
+            success: false,
+            message: `Only ${variant.stock_quantity} units of ${product.name}${variantSuffix} are currently available.`
+          });
+        }
+      } else {
+        if (product.stock_quantity <= 0) {
+          return res.status(400).json({
+            success: false,
+            message: `"${product.name}" is currently out of stock.`
+          });
+        }
+        if (qty > product.stock_quantity) {
+          return res.status(400).json({
+            success: false,
+            message: `Only ${product.stock_quantity} units of ${product.name} are currently available.`
+          });
+        }
+      }
+
       // Get cover image
       const { data: media } = await supabase
         .from("product_media")
@@ -139,8 +198,7 @@ const createOrder = async (req, res) => {
         .limit(1)
         .maybeSingle();
 
-      const unitPrice = Number(product.base_price || 0);
-      const qty = Math.max(1, parseInt(item.quantity, 10) || 1);
+      const unitPrice = variant?.price ? Number(variant.price) : Number(product.base_price || 0);
 
       let extraPrice = 0;
       if (item.printedName || item.printedNumber) {
@@ -155,12 +213,12 @@ const createOrder = async (req, res) => {
 
       preparedItems.push({
         product_id: product.id,
-        variant_id: item.variantId || null,
+        variant_id: variant?.id || vId || null,
         product_name_snapshot: product.name,
         category_name_snapshot: product.category?.name || "General",
         cover_image_path_snapshot: media?.storage_path || null,
-        size_value_snapshot: item.size || item.size_value || null,
-        color_value_snapshot: item.color || item.color_value || null,
+        size_value_snapshot: item.size || item.size_value || variant?.size_value || null,
+        color_value_snapshot: item.color || item.color_value || variant?.color_value || null,
         quantity: qty,
         original_unit_price: unitPrice,
         unit_discount_amount: 0,
@@ -223,6 +281,34 @@ const createOrder = async (req, res) => {
     }));
 
     await supabase.from("order_items").insert(orderItemsWithId);
+
+    // Safely decrement inventory for purchased items
+    try {
+      for (const it of preparedItems) {
+        if (it.variant_id) {
+          const { data: curVar } = await supabase
+            .from("product_variants")
+            .select("stock_quantity")
+            .eq("id", it.variant_id)
+            .maybeSingle();
+          if (curVar) {
+            const newVarQty = Math.max(0, curVar.stock_quantity - it.quantity);
+            await supabase.from("product_variants").update({ stock_quantity: newVarQty }).eq("id", it.variant_id);
+          }
+        }
+        const { data: curProd } = await supabase
+          .from("products")
+          .select("stock_quantity")
+          .eq("id", it.product_id)
+          .maybeSingle();
+        if (curProd) {
+          const newProdQty = Math.max(0, curProd.stock_quantity - it.quantity);
+          await supabase.from("products").update({ stock_quantity: newProdQty }).eq("id", it.product_id);
+        }
+      }
+    } catch (stockDecErr) {
+      console.warn("Stock decrement warning:", stockDecErr);
+    }
 
     // Initial status history entry
     await supabase.from("order_status_history").insert({
