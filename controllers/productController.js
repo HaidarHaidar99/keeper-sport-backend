@@ -54,6 +54,26 @@ const computeProductPricing = (product, activeOffersMap = new Map()) => {
   };
 };
 
+// In-memory cache for category lookups in product catalog
+let cachedCategoriesData = { categoriesMap: null, categorySlugMap: null, timestamp: 0 };
+const CATEGORIES_CACHE_TTL_MS = 60 * 1000;
+
+const getCachedCategories = async () => {
+  const now = Date.now();
+  if (cachedCategoriesData.categoriesMap && now - cachedCategoriesData.timestamp < CATEGORIES_CACHE_TTL_MS) {
+    return cachedCategoriesData;
+  }
+  const { data: allCategories } = await supabase
+    .from("categories")
+    .select("id, name, slug")
+    .eq("is_active", true);
+
+  const categoriesMap = new Map((allCategories || []).map((c) => [c.id, c]));
+  const categorySlugMap = new Map((allCategories || []).map((c) => [c.slug, c.id]));
+  cachedCategoriesData = { categoriesMap, categorySlugMap, timestamp: now };
+  return cachedCategoriesData;
+};
+
 /**
  * Get Products Catalog with search, filters, sorting, and pagination
  * GET /api/products
@@ -80,14 +100,8 @@ const getProducts = async (req, res) => {
     // 1. Standard low stock threshold constant from application domain
     const lowStockThreshold = 5;
 
-    // 2. Fetch categories map
-    const { data: allCategories } = await supabase
-      .from("categories")
-      .select("id, name, slug")
-      .eq("is_active", true);
-
-    const categoriesMap = new Map((allCategories || []).map((c) => [c.id, c]));
-    const categorySlugMap = new Map((allCategories || []).map((c) => [c.slug, c.id]));
+    // 2. Fetch categories map (cached in-memory)
+    const { categoriesMap, categorySlugMap } = await getCachedCategories();
 
     // 3. Resolve category filter if passed as slug or id
     let filterCategoryId = null;

@@ -1,19 +1,23 @@
 const crypto = require("crypto");
 const supabase = require("../config/supabase");
 const { getCategoryImagesMap, setCategoryImage, removeCategoryImage } = require("../utils/categoryStorage");
+const { clearContentCache } = require("./contentController");
 
 const BUCKET_NAME = "keeper-media";
 
 /**
- * Helper: ensure Supabase storage bucket exists
+ * Helper: ensure Supabase storage bucket exists (cached once)
  */
+let bucketEnsured = false;
 const ensureStorageBucket = async () => {
+  if (bucketEnsured) return;
   try {
     const { data: buckets } = await supabase.storage.listBuckets();
     const exists = (buckets || []).some((b) => b.name === BUCKET_NAME);
     if (!exists) {
       await supabase.storage.createBucket(BUCKET_NAME, { public: true });
     }
+    bucketEnsured = true;
   } catch (err) {
     console.warn("Storage bucket check warning:", err.message);
   }
@@ -262,6 +266,7 @@ const createHeroSlide = async (req, res) => {
       console.error("createHeroSlide error:", error);
       return res.status(500).json({ success: false, message: error.message });
     }
+    clearContentCache("hero");
     return res.json({ success: true, slide: data, message: "Hero slide created successfully." });
   } catch (err) {
     console.error("createHeroSlide catch error:", err);
@@ -315,6 +320,7 @@ const updateHeroSlide = async (req, res) => {
       console.error("updateHeroSlide error:", error);
       return res.status(500).json({ success: false, message: error.message });
     }
+    clearContentCache("hero");
     return res.json({ success: true, slide: data, message: "Hero slide updated successfully." });
   } catch (err) {
     console.error("updateHeroSlide catch error:", err);
@@ -333,6 +339,7 @@ const deleteHeroSlide = async (req, res) => {
       console.error("deleteHeroSlide error:", error);
       return res.status(500).json({ success: false, message: error.message });
     }
+    clearContentCache("hero");
     return res.json({ success: true, message: "Hero slide deleted successfully." });
   } catch (err) {
     console.error("deleteHeroSlide catch error:", err);
@@ -392,6 +399,7 @@ const createOfferBar = async (req, res) => {
       console.error("createOfferBar error:", error);
       return res.status(500).json({ success: false, message: error.message });
     }
+    clearContentCache("offers");
     return res.json({ success: true, offer: data, message: "Offer bar created successfully." });
   } catch (err) {
     console.error("createOfferBar catch error:", err);
@@ -427,6 +435,7 @@ const updateOfferBar = async (req, res) => {
       console.error("updateOfferBar error:", error);
       return res.status(500).json({ success: false, message: error.message });
     }
+    clearContentCache("offers");
     return res.json({ success: true, offer: data, message: "Offer bar updated successfully." });
   } catch (err) {
     console.error("updateOfferBar catch error:", err);
@@ -442,6 +451,7 @@ const deleteOfferBar = async (req, res) => {
     const { id } = req.params;
     const { error } = await supabase.from("offer_bars").delete().eq("id", id);
     if (error) throw error;
+    clearContentCache("offers");
     return res.json({ success: true, message: "Offer bar deleted successfully." });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
@@ -529,6 +539,7 @@ const updateSiteSettingsAdmin = async (req, res) => {
       return res.status(500).json({ success: false, message: error.message });
     }
 
+    clearContentCache("settings");
     return res.json({ success: true, settings: data, message: "Site settings updated successfully." });
   } catch (err) {
     console.error("updateSiteSettingsAdmin unexpected error:", err);
@@ -1225,12 +1236,14 @@ const getOrdersAdmin = async (req, res) => {
     const offset = (pageNum - 1) * limitNum;
 
     // Order stats
-    const [totalRes, pendingRes, preparingRes, onDeliveryRes, deliveredRes, cancelledRes] = await Promise.all([
+    const [totalRes, pendingRes, acceptedRes, preparingRes, onDeliveryRes, deliveredRes, rejectedRes, cancelledRes] = await Promise.all([
       supabase.from("orders").select("id", { count: "exact", head: true }),
       supabase.from("orders").select("id", { count: "exact", head: true }).eq("status", "pending"),
+      supabase.from("orders").select("id", { count: "exact", head: true }).eq("status", "accepted"),
       supabase.from("orders").select("id", { count: "exact", head: true }).eq("status", "preparing"),
       supabase.from("orders").select("id", { count: "exact", head: true }).eq("status", "on_delivery"),
       supabase.from("orders").select("id", { count: "exact", head: true }).eq("status", "delivered"),
+      supabase.from("orders").select("id", { count: "exact", head: true }).eq("status", "rejected"),
       supabase.from("orders").select("id", { count: "exact", head: true }).eq("status", "cancelled")
     ]);
 
@@ -1259,9 +1272,11 @@ const getOrdersAdmin = async (req, res) => {
       stats: {
         total: totalRes.count || 0,
         pending: pendingRes.count || 0,
+        accepted: acceptedRes.count || 0,
         preparing: preparingRes.count || 0,
         onDelivery: onDeliveryRes.count || 0,
         delivered: deliveredRes.count || 0,
+        rejected: rejectedRes.count || 0,
         cancelled: cancelledRes.count || 0
       }
     });

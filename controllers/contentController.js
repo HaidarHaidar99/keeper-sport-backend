@@ -1,11 +1,31 @@
 const supabase = require("../config/supabase");
 
+// In-memory cache for high-frequency public content
+let settingsCache = { data: null, timestamp: 0 };
+let heroSlidesCache = { data: null, timestamp: 0 };
+let offerBarsCache = { data: null, timestamp: 0 };
+const CONTENT_CACHE_TTL_MS = 60 * 1000; // 60 seconds
+
+const clearContentCache = (key) => {
+  if (!key || key === "settings") settingsCache = { data: null, timestamp: 0 };
+  if (!key || key === "hero") heroSlidesCache = { data: null, timestamp: 0 };
+  if (!key || key === "offers") offerBarsCache = { data: null, timestamp: 0 };
+};
+
 /**
  * Get Public Site Settings
  * GET /api/site-settings
  */
 const getSiteSettings = async (req, res) => {
   try {
+    const now = Date.now();
+    if (settingsCache.data && now - settingsCache.timestamp < CONTENT_CACHE_TTL_MS) {
+      return res.json({
+        success: true,
+        settings: settingsCache.data
+      });
+    }
+
     const { data: settings, error } = await supabase
       .from("site_settings")
       .select("site_name, logo_path, favicon_path, phone_number, email, whatsapp_number, instagram_url, facebook_url, tiktok_url, x_url, location_name, location_url, about_us, delivery_fee, printing_price, badge_price, premier_league_badge_available, champions_league_badge_available, la_liga_badge_available")
@@ -20,12 +40,16 @@ const getSiteSettings = async (req, res) => {
       });
     }
 
+    const resultSettings = settings || {
+      site_name: "Keeper Sports",
+      logo_path: null
+    };
+
+    settingsCache = { data: resultSettings, timestamp: now };
+
     return res.json({
       success: true,
-      settings: settings || {
-        site_name: "Keeper Sports",
-        logo_path: null
-      }
+      settings: resultSettings
     });
   } catch (err) {
     console.error("Unexpected error in getSiteSettings:", err);
@@ -42,6 +66,14 @@ const getSiteSettings = async (req, res) => {
  */
 const getHeroSlides = async (req, res) => {
   try {
+    const now = Date.now();
+    if (heroSlidesCache.data && now - heroSlidesCache.timestamp < CONTENT_CACHE_TTL_MS) {
+      return res.json({
+        success: true,
+        slides: heroSlidesCache.data
+      });
+    }
+
     const { data: slides, error } = await supabase
       .from("hero_slides")
       .select("id, title, subtitle, media_type, media_path, fallback_image_path, primary_button_text, primary_button_route, secondary_button_text, secondary_button_route, duration_seconds, sort_order, is_active")
@@ -57,9 +89,12 @@ const getHeroSlides = async (req, res) => {
       });
     }
 
+    const resultSlides = slides || [];
+    heroSlidesCache = { data: resultSlides, timestamp: now };
+
     return res.json({
       success: true,
-      slides: slides || []
+      slides: resultSlides
     });
   } catch (err) {
     console.error("Unexpected error in getHeroSlides:", err);
@@ -76,7 +111,20 @@ const getHeroSlides = async (req, res) => {
  */
 const getOfferBars = async (req, res) => {
   try {
-    const now = new Date().toISOString();
+    const nowMs = Date.now();
+    const nowIso = new Date().toISOString();
+
+    if (offerBarsCache.data && nowMs - offerBarsCache.timestamp < CONTENT_CACHE_TTL_MS) {
+      const activeOffers = offerBarsCache.data.filter((offer) => {
+        if (offer.starts_at && new Date(offer.starts_at) > new Date(nowIso)) return false;
+        if (offer.ends_at && new Date(offer.ends_at) < new Date(nowIso)) return false;
+        return true;
+      });
+      return res.json({
+        success: true,
+        offers: activeOffers
+      });
+    }
 
     const { data: offers, error } = await supabase
       .from("offer_bars")
@@ -93,10 +141,12 @@ const getOfferBars = async (req, res) => {
       });
     }
 
-    // Filter active time window in memory or via query
-    const validOffers = (offers || []).filter((offer) => {
-      if (offer.starts_at && new Date(offer.starts_at) > new Date(now)) return false;
-      if (offer.ends_at && new Date(offer.ends_at) < new Date(now)) return false;
+    const rawOffers = offers || [];
+    offerBarsCache = { data: rawOffers, timestamp: nowMs };
+
+    const validOffers = rawOffers.filter((offer) => {
+      if (offer.starts_at && new Date(offer.starts_at) > new Date(nowIso)) return false;
+      if (offer.ends_at && new Date(offer.ends_at) < new Date(nowIso)) return false;
       return true;
     });
 
@@ -211,19 +261,12 @@ const getUserCounts = async (req, res) => {
         (async () => {
           const { data: cart } = await supabase
             .from("carts")
-            .select("id")
+            .select("id, cart_items(quantity)")
             .eq("user_id", userId)
             .maybeSingle();
 
-          if (!cart) return 0;
-
-          const { data: items } = await supabase
-            .from("cart_items")
-            .select("quantity")
-            .eq("cart_id", cart.id);
-
-          if (!items || items.length === 0) return 0;
-          return items.reduce((sum, i) => sum + (i.quantity || 1), 0);
+          if (!cart || !cart.cart_items || cart.cart_items.length === 0) return 0;
+          return cart.cart_items.reduce((sum, i) => sum + (i.quantity || 1), 0);
         })(),
 
         supabase
@@ -280,19 +323,12 @@ const getUserCounts = async (req, res) => {
       (async () => {
         const { data: cart } = await supabase
           .from("carts")
-          .select("id")
+          .select("id, cart_items(quantity)")
           .eq("guest_identifier", guestIdentifier)
           .maybeSingle();
 
-        if (!cart) return 0;
-
-        const { data: items } = await supabase
-          .from("cart_items")
-          .select("quantity")
-          .eq("cart_id", cart.id);
-
-        if (!items || items.length === 0) return 0;
-        return items.reduce((sum, i) => sum + (i.quantity || 1), 0);
+        if (!cart || !cart.cart_items || cart.cart_items.length === 0) return 0;
+        return cart.cart_items.reduce((sum, i) => sum + (i.quantity || 1), 0);
       })()
     ]);
 
@@ -581,6 +617,7 @@ module.exports = {
   submitContactMessage,
   getCustomerNotifications,
   markCustomerNotificationRead,
-  markAllCustomerNotificationsRead
+  markAllCustomerNotificationsRead,
+  clearContentCache
 };
 
