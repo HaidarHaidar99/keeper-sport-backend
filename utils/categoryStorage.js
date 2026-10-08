@@ -37,7 +37,7 @@ const getCategoryImagesMap = async (forceRefresh = false) => {
  */
 const setCategoryImage = async (categoryId, imagePath) => {
   try {
-    const currentMap = await getCategoryImagesMap(true);
+    const currentMap = await getCategoryImagesMap(false);
     if (imagePath) {
       currentMap[categoryId] = imagePath;
     } else {

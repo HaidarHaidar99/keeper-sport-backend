@@ -15,5 +15,10 @@ router.post("/contact", optionalAuth, contentController.submitContactMessage);
 // User Counts Endpoint (Optional Auth: returns 0s for guests, real counts for authenticated users)
 router.get("/user/counts", optionalAuth, contentController.getUserCounts);
 
+// Customer Notifications Endpoints
+router.get("/notifications", optionalAuth, contentController.getCustomerNotifications);
+router.patch("/notifications/:id/read", optionalAuth, contentController.markCustomerNotificationRead);
+router.post("/notifications/mark-all-read", optionalAuth, contentController.markAllCustomerNotificationsRead);
+
 module.exports = router;
 

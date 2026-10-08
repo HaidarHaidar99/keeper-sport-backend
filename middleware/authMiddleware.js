@@ -55,6 +55,14 @@ const requireAuth = async (req, res, next) => {
       });
     }
 
+    // Isolate portal sessions: admin portal tokens are not customer sessions
+    if (decoded.portal === "admin") {
+      return res.status(401).json({
+        success: false,
+        message: "Customer authentication required."
+      });
+    }
+
     const { data: user, error } = await supabase
       .from("users")
       .select("id, full_name, email, role, auth_provider, is_verified, created_at, updated_at")
@@ -105,6 +113,12 @@ const optionalAuth = async (req, res, next) => {
       return next();
     }
 
+    // Isolate portal sessions: admin portal tokens never act as storefront customer sessions
+    if (decoded.portal === "admin") {
+      req.user = null;
+      return next();
+    }
+
     const { data: user } = await supabase
       .from("users")
       .select("id, full_name, email, role, auth_provider, is_verified, created_at, updated_at")
@@ -138,11 +152,7 @@ const requireAdmin = async (req, res, next) => {
       token = req.cookies[ADMIN_COOKIE_NAME];
     }
 
-    // 3. Fallback to general cookie
-    if (!token && req.cookies?.[COOKIE_NAME]) {
-      token = req.cookies[COOKIE_NAME];
-    }
-
+    // Isolated: NEVER fall back to customer storefront cookie (COOKIE_NAME)
     if (!token) {
       return res.status(401).json({
         success: false,

@@ -1094,9 +1094,6 @@ const createCategory = async (req, res) => {
       sort_order: parseInt(sort_order, 10) || 0,
       is_active: Boolean(is_active)
     };
-    if (image_path !== undefined) {
-      categoryData.image_path = image_path ? image_path.trim() : null;
-    }
 
     let { data, error } = await supabase
       .from("categories")
@@ -1104,20 +1101,14 @@ const createCategory = async (req, res) => {
       .select("*")
       .single();
 
-    if (error && error.message && error.message.includes("image_path")) {
-      delete categoryData.image_path;
-      const retry = await supabase
-        .from("categories")
-        .insert(categoryData)
-        .select("*")
-        .single();
-      data = retry.data;
-      error = retry.error;
+    if (error) {
+      if (error.code === "23505" || (error.message && error.message.includes("unique"))) {
+        return res.status(400).json({ success: false, message: `A category named "${name.trim()}" already exists.` });
+      }
+      throw error;
     }
 
-    if (error) throw error;
-
-    // Persist to storage map
+    // Persist to persistent storage map
     if (image_path !== undefined && data && data.id) {
       await setCategoryImage(data.id, image_path ? image_path.trim() : null);
     }
@@ -1131,7 +1122,8 @@ const createCategory = async (req, res) => {
       message: `Category "${data.name}" created.`
     });
   } catch (err) {
-    return res.status(500).json({ success: false, message: err.message });
+    console.error("createCategory error:", err);
+    return res.status(500).json({ success: false, message: err.message || "Failed to create category." });
   }
 };
 
@@ -1150,7 +1142,6 @@ const updateCategory = async (req, res) => {
     }
     if (sort_order !== undefined) updates.sort_order = parseInt(sort_order, 10) || 0;
     if (is_active !== undefined) updates.is_active = Boolean(is_active);
-    if (image_path !== undefined) updates.image_path = image_path ? image_path.trim() : null;
 
     let { data, error } = await supabase
       .from("categories")
@@ -1159,19 +1150,12 @@ const updateCategory = async (req, res) => {
       .select("*")
       .single();
 
-    if (error && error.message && error.message.includes("image_path")) {
-      delete updates.image_path;
-      const retry = await supabase
-        .from("categories")
-        .update(updates)
-        .eq("id", id)
-        .select("*")
-        .single();
-      data = retry.data;
-      error = retry.error;
+    if (error) {
+      if (error.code === "23505" || (error.message && error.message.includes("unique"))) {
+        return res.status(400).json({ success: false, message: `A category named "${name.trim()}" already exists.` });
+      }
+      throw error;
     }
-
-    if (error) throw error;
 
     // Persist to storage map
     if (image_path !== undefined) {
@@ -1184,12 +1168,13 @@ const updateCategory = async (req, res) => {
       success: true,
       category: {
         ...data,
-        imagePath: image_path !== undefined ? (image_path ? image_path.trim() : null) : (data?.image_path || currentMap[id] || null)
+        imagePath: image_path !== undefined ? (image_path ? image_path.trim() : null) : (currentMap[id] || null)
       },
       message: `Category updated.`
     });
   } catch (err) {
-    return res.status(500).json({ success: false, message: err.message });
+    console.error("updateCategory error:", err);
+    return res.status(500).json({ success: false, message: err.message || "Failed to update category." });
   }
 };
 

@@ -466,6 +466,106 @@ const submitContactMessage = async (req, res) => {
   }
 };
 
+/**
+ * Get Customer Notifications
+ * GET /api/notifications
+ */
+const getCustomerNotifications = async (req, res) => {
+  try {
+    const userId = req.user?.id || null;
+
+    if (!userId) {
+      return res.json({
+        success: true,
+        notifications: [],
+        isGuest: true
+      });
+    }
+
+    const { data: notifications, error } = await supabase
+      .from("notifications")
+      .select("id, type, title, message, reference_type, reference_id, is_read, read_at, created_at")
+      .eq("recipient_user_id", userId)
+      .order("created_at", { ascending: false })
+      .limit(50);
+
+    if (error) {
+      console.error("Error fetching customer notifications:", error);
+      return res.status(500).json({ success: false, message: "Failed to fetch notifications." });
+    }
+
+    return res.json({
+      success: true,
+      notifications: notifications || [],
+      isGuest: false
+    });
+  } catch (err) {
+    console.error("Unexpected error in getCustomerNotifications:", err);
+    return res.status(500).json({ success: false, message: "Server error fetching notifications." });
+  }
+};
+
+/**
+ * Mark Customer Notification as Read
+ * PATCH /api/notifications/:id/read
+ */
+const markCustomerNotificationRead = async (req, res) => {
+  try {
+    const userId = req.user?.id || null;
+    const { id } = req.params;
+
+    if (!userId) {
+      return res.status(401).json({ success: false, message: "Authentication required." });
+    }
+
+    const { error } = await supabase
+      .from("notifications")
+      .update({ is_read: true, read_at: new Date().toISOString() })
+      .eq("id", id)
+      .eq("recipient_user_id", userId);
+
+    if (error) {
+      console.error("Error marking notification read:", error);
+      return res.status(500).json({ success: false, message: "Failed to mark notification read." });
+    }
+
+    return res.json({ success: true, message: "Notification marked as read." });
+  } catch (err) {
+    console.error("Unexpected error in markCustomerNotificationRead:", err);
+    return res.status(500).json({ success: false, message: "Server error marking notification read." });
+  }
+};
+
+/**
+ * Mark All Customer Notifications as Read
+ * POST /api/notifications/mark-all-read
+ */
+const markAllCustomerNotificationsRead = async (req, res) => {
+  try {
+    const userId = req.user?.id || null;
+
+    if (!userId) {
+      return res.status(401).json({ success: false, message: "Authentication required." });
+    }
+
+    const { error } = await supabase
+      .from("notifications")
+      .update({ is_read: true, read_at: new Date().toISOString() })
+      .eq("recipient_user_id", userId)
+      .eq("is_read", false);
+
+    if (error) {
+      console.error("Error marking all notifications read:", error);
+      return res.status(500).json({ success: false, message: "Failed to mark notifications read." });
+    }
+
+    return res.json({ success: true, message: "All notifications marked as read." });
+  } catch (err) {
+    console.error("Unexpected error in markAllCustomerNotificationsRead:", err);
+    return res.status(500).json({ success: false, message: "Server error marking notifications read." });
+  }
+};
+
 module.exports = {
   getSiteSettings,
   getHeroSlides,
@@ -474,6 +574,9 @@ module.exports = {
   getUserCounts,
   getOffers,
   getPublicReviews,
-  submitContactMessage
+  submitContactMessage,
+  getCustomerNotifications,
+  markCustomerNotificationRead,
+  markAllCustomerNotificationsRead
 };
 
