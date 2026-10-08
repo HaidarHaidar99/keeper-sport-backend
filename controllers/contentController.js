@@ -149,10 +149,14 @@ const getCategories = async (req, res) => {
 
     // Merge images from persistent storage map
     const imageMap = await getCategoryImagesMap().catch(() => ({}));
-    const formattedCategories = (categories || []).map((c) => ({
-      ...c,
-      image_path: c.image_path || imageMap[c.id] || null
-    }));
+    const formattedCategories = (categories || []).map((c) => {
+      const img = c.image_path || imageMap[c.id] || null;
+      return {
+        ...c,
+        image_path: img,
+        imagePath: img
+      };
+    });
 
     return res.json({
       success: true,
