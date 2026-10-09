@@ -1,6 +1,7 @@
 const crypto = require("crypto");
 const supabase = require("../config/supabase");
 const { getCategoryImagesMap, setCategoryImage, removeCategoryImage } = require("../utils/categoryStorage");
+const { getSiteContent, updateSiteContent } = require("../utils/siteContentStorage");
 const { clearContentCache } = require("./contentController");
 
 const BUCKET_NAME = "keeper-media";
@@ -1810,6 +1811,290 @@ const deleteContactFormAdmin = async (req, res) => {
   }
 };
 
+
+
+// =============================================================================
+// HOMEPAGE STORY / AFTER HERO MANAGEMENT
+// =============================================================================
+
+const getHomepageStoryAdmin = async (req, res) => {
+  try {
+    const siteContent = await getSiteContent();
+    return res.json({ success: true, story: siteContent.homepage_story });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+const updateHomepageStoryAdmin = async (req, res) => {
+  try {
+    const { is_active, heading, subheading, media_path, button_text, button_route } = req.body;
+    const updates = {};
+    if (is_active !== undefined) updates.is_active = Boolean(is_active);
+    if (heading !== undefined) updates.heading = heading ? heading.trim() : "";
+    if (subheading !== undefined) updates.subheading = subheading ? subheading.trim() : "";
+    if (media_path !== undefined) updates.media_path = media_path ? media_path.trim() : null;
+    if (button_text !== undefined) updates.button_text = button_text ? button_text.trim() : "EXPLORE PRODUCTS";
+    if (button_route !== undefined) updates.button_route = button_route ? button_route.trim() : "/products";
+
+    const updated = await updateSiteContent("homepage_story", updates);
+    return res.json({ success: true, story: updated.homepage_story, message: "Homepage Story updated successfully." });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// =============================================================================
+// LOCATION / GOOGLE MAPS SETTINGS
+// =============================================================================
+
+const getLocationSettingsAdmin = async (req, res) => {
+  try {
+    const [siteContent, dbSettings] = await Promise.all([
+      getSiteContent(),
+      supabase.from("site_settings").select("location_name, location_url").eq("id", 1).maybeSingle()
+    ]);
+    const loc = {
+      ...siteContent.location,
+      location_name: dbSettings.data?.location_name || siteContent.location.location_name,
+      location_url: dbSettings.data?.location_url || siteContent.location.location_url
+    };
+    return res.json({ success: true, location: loc });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+const updateLocationSettingsAdmin = async (req, res) => {
+  try {
+    const { is_active, location_name, address, location_url, description, phone_number, whatsapp_number } = req.body;
+    const updates = {};
+    if (is_active !== undefined) updates.is_active = Boolean(is_active);
+    if (location_name !== undefined) updates.location_name = location_name ? location_name.trim() : "";
+    if (address !== undefined) updates.address = address ? address.trim() : "";
+    if (location_url !== undefined) updates.location_url = location_url ? location_url.trim() : "";
+    if (description !== undefined) updates.description = description ? description.trim() : "";
+    if (phone_number !== undefined) updates.phone_number = phone_number ? phone_number.trim() : "";
+    if (whatsapp_number !== undefined) updates.whatsapp_number = whatsapp_number ? whatsapp_number.trim() : "";
+
+    const updated = await updateSiteContent("location", updates);
+    const dbUpdates = {};
+    if (updates.location_name !== undefined) dbUpdates.location_name = updates.location_name;
+    if (updates.location_url !== undefined) dbUpdates.location_url = updates.location_url;
+    if (updates.phone_number !== undefined) dbUpdates.phone_number = updates.phone_number;
+    if (updates.whatsapp_number !== undefined) dbUpdates.whatsapp_number = updates.whatsapp_number;
+    if (Object.keys(dbUpdates).length > 0) {
+      await supabase.from("site_settings").update(dbUpdates).eq("id", 1);
+      clearContentCache("settings");
+    }
+
+    return res.json({ success: true, location: updated.location, message: "Location settings updated successfully." });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// =============================================================================
+// SOCIAL MEDIA SETTINGS
+// =============================================================================
+
+const getSocialSettingsAdmin = async (req, res) => {
+  try {
+    const [siteContent, dbSettings] = await Promise.all([
+      getSiteContent(),
+      supabase.from("site_settings").select("instagram_url, facebook_url, tiktok_url, x_url").eq("id", 1).maybeSingle()
+    ]);
+    const soc = {
+      ...siteContent.social_media,
+      instagram_url: dbSettings.data?.instagram_url || siteContent.social_media.instagram_url,
+      facebook_url: dbSettings.data?.facebook_url || siteContent.social_media.facebook_url,
+      tiktok_url: dbSettings.data?.tiktok_url || siteContent.social_media.tiktok_url,
+      x_url: dbSettings.data?.x_url || siteContent.social_media.x_url
+    };
+    return res.json({ success: true, social_media: soc });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+const updateSocialSettingsAdmin = async (req, res) => {
+  try {
+    const { is_active, instagram_url, facebook_url, tiktok_url, x_url, youtube_url, whatsapp_url } = req.body;
+    const updates = {};
+    if (is_active !== undefined) updates.is_active = Boolean(is_active);
+    if (instagram_url !== undefined) updates.instagram_url = instagram_url ? instagram_url.trim() : "";
+    if (facebook_url !== undefined) updates.facebook_url = facebook_url ? facebook_url.trim() : "";
+    if (tiktok_url !== undefined) updates.tiktok_url = tiktok_url ? tiktok_url.trim() : "";
+    if (x_url !== undefined) updates.x_url = x_url ? x_url.trim() : "";
+    if (youtube_url !== undefined) updates.youtube_url = youtube_url ? youtube_url.trim() : "";
+    if (whatsapp_url !== undefined) updates.whatsapp_url = whatsapp_url ? whatsapp_url.trim() : "";
+
+    const updated = await updateSiteContent("social_media", updates);
+    const dbUpdates = {};
+    if (updates.instagram_url !== undefined) dbUpdates.instagram_url = updates.instagram_url;
+    if (updates.facebook_url !== undefined) dbUpdates.facebook_url = updates.facebook_url;
+    if (updates.tiktok_url !== undefined) dbUpdates.tiktok_url = updates.tiktok_url;
+    if (updates.x_url !== undefined) dbUpdates.x_url = updates.x_url;
+    if (Object.keys(dbUpdates).length > 0) {
+      await supabase.from("site_settings").update(dbUpdates).eq("id", 1);
+      clearContentCache("settings");
+    }
+
+    return res.json({ success: true, social_media: updated.social_media, message: "Social media settings updated successfully." });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// =============================================================================
+// OFFERS MANAGEMENT (REAL OFFERS LINKED TO PRODUCTS / CATEGORIES)
+// =============================================================================
+
+const getOffersAdmin = async (req, res) => {
+  try {
+    const { data: offers, error } = await supabase
+      .from("offers")
+      .select(`
+        *,
+        offer_products (
+          product_id,
+          products (id, name, slug, base_price)
+        ),
+        offer_categories (
+          category_id,
+          categories (id, name, slug)
+        )
+      `)
+      .order("created_at", { ascending: false });
+
+    if (error) throw error;
+    return res.json({ success: true, offers: offers || [] });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+const createOfferAdmin = async (req, res) => {
+  try {
+    const {
+      title,
+      description,
+      discount_type = "percentage",
+      discount_value,
+      free_delivery = false,
+      starts_at,
+      ends_at,
+      is_visible = true,
+      product_ids = [],
+      category_ids = []
+    } = req.body;
+
+    if (!title || !title.trim()) {
+      return res.status(400).json({ success: false, message: "Offer title is required." });
+    }
+
+    const { data: newOffer, error: offerErr } = await supabase
+      .from("offers")
+      .insert({
+        title: title.trim(),
+        description: description ? description.trim() : null,
+        discount_type,
+        discount_value: discount_value ? parseFloat(discount_value) : null,
+        free_delivery: Boolean(free_delivery),
+        starts_at: starts_at || null,
+        ends_at: ends_at || null,
+        is_visible: Boolean(is_visible)
+      })
+      .select("*")
+      .single();
+
+    if (offerErr) throw offerErr;
+
+    if (Array.isArray(product_ids) && product_ids.length > 0) {
+      const pRows = product_ids.map((pid) => ({ offer_id: newOffer.id, product_id: pid }));
+      await supabase.from("offer_products").insert(pRows);
+    }
+
+    if (Array.isArray(category_ids) && category_ids.length > 0) {
+      const cRows = category_ids.map((cid) => ({ offer_id: newOffer.id, category_id: cid }));
+      await supabase.from("offer_categories").insert(cRows);
+    }
+
+    return res.json({ success: true, offer: newOffer, message: "Offer created successfully." });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+const updateOfferAdmin = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      title,
+      description,
+      discount_type,
+      discount_value,
+      free_delivery,
+      starts_at,
+      ends_at,
+      is_visible,
+      product_ids,
+      category_ids
+    } = req.body;
+
+    const updates = {};
+    if (title !== undefined) updates.title = title ? title.trim() : "";
+    if (description !== undefined) updates.description = description ? description.trim() : null;
+    if (discount_type !== undefined) updates.discount_type = discount_type;
+    if (discount_value !== undefined) updates.discount_value = discount_value ? parseFloat(discount_value) : null;
+    if (free_delivery !== undefined) updates.free_delivery = Boolean(free_delivery);
+    if (starts_at !== undefined) updates.starts_at = starts_at || null;
+    if (ends_at !== undefined) updates.ends_at = ends_at || null;
+    if (is_visible !== undefined) updates.is_visible = Boolean(is_visible);
+    updates.updated_at = new Date().toISOString();
+
+    const { data: updatedOffer, error: offerErr } = await supabase
+      .from("offers")
+      .update(updates)
+      .eq("id", id)
+      .select("*")
+      .single();
+
+    if (offerErr) throw offerErr;
+
+    if (Array.isArray(product_ids)) {
+      await supabase.from("offer_products").delete().eq("offer_id", id);
+      if (product_ids.length > 0) {
+        const pRows = product_ids.map((pid) => ({ offer_id: id, product_id: pid }));
+        await supabase.from("offer_products").insert(pRows);
+      }
+    }
+
+    if (Array.isArray(category_ids)) {
+      await supabase.from("offer_categories").delete().eq("offer_id", id);
+      if (category_ids.length > 0) {
+        const cRows = category_ids.map((cid) => ({ offer_id: id, category_id: cid }));
+        await supabase.from("offer_categories").insert(cRows);
+      }
+    }
+
+    return res.json({ success: true, offer: updatedOffer, message: "Offer updated successfully." });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+const deleteOfferAdmin = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { error } = await supabase.from("offers").delete().eq("id", id);
+    if (error) throw error;
+    return res.json({ success: true, message: "Offer deleted successfully." });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 module.exports = {
   getDashboardOverview,
   uploadMedia,
@@ -1855,5 +2140,20 @@ module.exports = {
   // Contact Forms
   getContactFormsAdmin,
   markContactFormReadAdmin,
-  deleteContactFormAdmin
+  deleteContactFormAdmin,
+  // Homepage Story
+  getHomepageStoryAdmin,
+  updateHomepageStoryAdmin,
+  // Location
+  getLocationSettingsAdmin,
+  updateLocationSettingsAdmin,
+  // Social Media
+  getSocialSettingsAdmin,
+  updateSocialSettingsAdmin,
+  // Offers
+  getOffersAdmin,
+  createOfferAdmin,
+  updateOfferAdmin,
+  deleteOfferAdmin
 };
+

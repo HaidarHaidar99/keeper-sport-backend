@@ -30,9 +30,21 @@ router.post("/offer-bars", adminController.createOfferBar);
 router.put("/offer-bars/:id", adminController.updateOfferBar);
 router.delete("/offer-bars/:id", adminController.deleteOfferBar);
 
-// Settings
+// Settings & Content
 router.get("/settings", adminController.getSiteSettingsAdmin);
 router.put("/settings", adminController.updateSiteSettingsAdmin);
+router.get("/homepage-story", adminController.getHomepageStoryAdmin);
+router.put("/homepage-story", adminController.updateHomepageStoryAdmin);
+router.get("/location", adminController.getLocationSettingsAdmin);
+router.put("/location", adminController.updateLocationSettingsAdmin);
+router.get("/social-media", adminController.getSocialSettingsAdmin);
+router.put("/social-media", adminController.updateSocialSettingsAdmin);
+
+// Offers (Products & Categories Discounts)
+router.get("/offers", adminController.getOffersAdmin);
+router.post("/offers", adminController.createOfferAdmin);
+router.put("/offers/:id", adminController.updateOfferAdmin);
+router.delete("/offers/:id", adminController.deleteOfferAdmin);
 
 // Products
 router.get("/products/overview", adminController.getProductsOverview);

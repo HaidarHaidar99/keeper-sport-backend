@@ -1,10 +1,11 @@
 const supabase = require("../config/supabase");
+const { getSiteContent } = require("../utils/siteContentStorage");
 
 // In-memory cache for high-frequency public content
 let settingsCache = { data: null, timestamp: 0 };
 let heroSlidesCache = { data: null, timestamp: 0 };
 let offerBarsCache = { data: null, timestamp: 0 };
-const CONTENT_CACHE_TTL_MS = 60 * 1000; // 60 seconds
+const CONTENT_CACHE_TTL_MS = 30 * 1000; // 30 seconds
 
 const clearContentCache = (key) => {
   if (!key || key === "settings") settingsCache = { data: null, timestamp: 0 };
@@ -26,23 +27,41 @@ const getSiteSettings = async (req, res) => {
       });
     }
 
-    const { data: settings, error } = await supabase
-      .from("site_settings")
-      .select("site_name, logo_path, favicon_path, phone_number, email, whatsapp_number, instagram_url, facebook_url, tiktok_url, x_url, location_name, location_url, about_us, delivery_fee, printing_price, badge_price, premier_league_badge_available, champions_league_badge_available, la_liga_badge_available")
-      .eq("id", 1)
-      .maybeSingle();
+    const [settingsRes, siteContent] = await Promise.all([
+      supabase
+        .from("site_settings")
+        .select("site_name, logo_path, favicon_path, phone_number, email, whatsapp_number, instagram_url, facebook_url, tiktok_url, x_url, location_name, location_url, about_us, delivery_fee, printing_price, badge_price, premier_league_badge_available, champions_league_badge_available, la_liga_badge_available")
+        .eq("id", 1)
+        .maybeSingle(),
+      getSiteContent().catch(() => null)
+    ]);
 
-    if (error) {
-      console.error("Error fetching site settings:", error);
+    if (settingsRes.error) {
+      console.error("Error fetching site settings:", settingsRes.error);
       return res.status(500).json({
         success: false,
         message: "Failed to fetch site settings."
       });
     }
 
-    const resultSettings = settings || {
-      site_name: "Keeper Sports",
-      logo_path: null
+    const settings = settingsRes.data;
+    const resultSettings = {
+      ...(settings || { site_name: "Keeper Sports", logo_path: null }),
+      homepage_story: siteContent?.homepage_story || null,
+      location: {
+        ...(siteContent?.location || {}),
+        location_name: settings?.location_name || siteContent?.location?.location_name || "Keeper Sports",
+        location_url: settings?.location_url || siteContent?.location?.location_url || "",
+        phone_number: settings?.phone_number || siteContent?.location?.phone_number || "",
+        whatsapp_number: settings?.whatsapp_number || siteContent?.location?.whatsapp_number || ""
+      },
+      social_media: {
+        ...(siteContent?.social_media || {}),
+        instagram_url: settings?.instagram_url || siteContent?.social_media?.instagram_url || "",
+        facebook_url: settings?.facebook_url || siteContent?.social_media?.facebook_url || "",
+        tiktok_url: settings?.tiktok_url || siteContent?.social_media?.tiktok_url || "",
+        x_url: settings?.x_url || siteContent?.social_media?.x_url || ""
+      }
     };
 
     settingsCache = { data: resultSettings, timestamp: now };
@@ -359,7 +378,17 @@ const getOffers = async (req, res) => {
     const now = new Date().toISOString();
     const { data: offers, error } = await supabase
       .from("offers")
-      .select("id, title, description, discount_type, discount_value, free_delivery, starts_at, ends_at, is_visible")
+      .select(`
+        id, title, description, discount_type, discount_value, free_delivery, starts_at, ends_at, is_visible,
+        offer_products (
+          product_id,
+          products (id, name, slug, base_price)
+        ),
+        offer_categories (
+          category_id,
+          categories (id, name, slug)
+        )
+      `)
       .eq("is_visible", true)
       .order("created_at", { ascending: false });
 
@@ -606,6 +635,72 @@ const markAllCustomerNotificationsRead = async (req, res) => {
   }
 };
 
+/**
+ * Get Public Homepage Story / After-Hero Section
+ * GET /api/homepage-story
+ */
+const getHomepageStory = async (req, res) => {
+  try {
+    const siteContent = await getSiteContent();
+    const story = siteContent?.homepage_story;
+    if (!story || story.is_active === false) {
+      return res.json({ success: true, story: null });
+    }
+    return res.json({ success: true, story });
+  } catch (err) {
+    console.error("Error in getHomepageStory:", err);
+    return res.status(500).json({ success: false, message: "Error fetching homepage story." });
+  }
+};
+
+/**
+ * Get Public Store Location Settings
+ * GET /api/location
+ */
+const getLocationSettings = async (req, res) => {
+  try {
+    const [siteContent, dbSettings] = await Promise.all([
+      getSiteContent(),
+      supabase.from("site_settings").select("location_name, location_url, phone_number, whatsapp_number").eq("id", 1).maybeSingle()
+    ]);
+    const loc = {
+      ...(siteContent?.location || {}),
+      location_name: dbSettings.data?.location_name || siteContent?.location?.location_name || "Keeper Sports",
+      location_url: dbSettings.data?.location_url || siteContent?.location?.location_url || "",
+      phone_number: dbSettings.data?.phone_number || siteContent?.location?.phone_number || "",
+      whatsapp_number: dbSettings.data?.whatsapp_number || siteContent?.location?.whatsapp_number || ""
+    };
+    return res.json({ success: true, location: loc });
+  } catch (err) {
+    console.error("Error in getLocationSettings:", err);
+    return res.status(500).json({ success: false, message: "Error fetching location settings." });
+  }
+};
+
+/**
+ * Get Public Social Media Settings
+ * GET /api/social-media
+ */
+const getSocialSettings = async (req, res) => {
+  try {
+    const [siteContent, dbSettings] = await Promise.all([
+      getSiteContent(),
+      supabase.from("site_settings").select("instagram_url, facebook_url, tiktok_url, x_url").eq("id", 1).maybeSingle()
+    ]);
+    const soc = {
+      ...(siteContent?.social_media || {}),
+      instagram_url: dbSettings.data?.instagram_url || siteContent?.social_media?.instagram_url || "",
+      facebook_url: dbSettings.data?.facebook_url || siteContent?.social_media?.facebook_url || "",
+      tiktok_url: dbSettings.data?.tiktok_url || siteContent?.social_media?.tiktok_url || "",
+      x_url: dbSettings.data?.x_url || siteContent?.social_media?.x_url || ""
+    };
+    return res.json({ success: true, social_media: soc });
+  } catch (err) {
+    console.error("Error in getSocialSettings:", err);
+    return res.status(500).json({ success: false, message: "Error fetching social settings." });
+  }
+};
+
 module.exports = {
   getSiteSettings,
   getHeroSlides,
@@ -613,6 +708,9 @@ module.exports = {
   getCategories,
   getUserCounts,
   getOffers,
+  getHomepageStory,
+  getLocationSettings,
+  getSocialSettings,
   getPublicReviews,
   submitContactMessage,
   getCustomerNotifications,

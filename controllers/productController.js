@@ -103,10 +103,27 @@ const getProducts = async (req, res) => {
     // 2. Fetch categories map (cached in-memory)
     const { categoriesMap, categorySlugMap } = await getCachedCategories();
 
-    // 3. Resolve category filter if passed as slug or id
+    // 3. Resolve category filter if passed as slug, id, or name
     let filterCategoryId = null;
-    if (category) {
-      filterCategoryId = categorySlugMap.get(category) || category;
+    if (category && typeof category === "string") {
+      const cleanCat = category.trim();
+      if (categorySlugMap.has(cleanCat)) {
+        filterCategoryId = categorySlugMap.get(cleanCat);
+      } else if (categorySlugMap.has(cleanCat.toLowerCase())) {
+        filterCategoryId = categorySlugMap.get(cleanCat.toLowerCase());
+      } else if (categoriesMap.has(cleanCat)) {
+        filterCategoryId = cleanCat;
+      } else {
+        for (const [id, c] of categoriesMap.entries()) {
+          if (
+            (c.slug && c.slug.toLowerCase() === cleanCat.toLowerCase()) ||
+            (c.name && c.name.toLowerCase() === cleanCat.toLowerCase())
+          ) {
+            filterCategoryId = id;
+            break;
+          }
+        }
+      }
     }
 
     // 4. Build base query for products
@@ -118,8 +135,13 @@ const getProducts = async (req, res) => {
       )
       .eq("is_active", true);
 
-    if (filterCategoryId) {
-      query = query.eq("category_id", filterCategoryId);
+    if (category) {
+      if (filterCategoryId) {
+        query = query.eq("category_id", filterCategoryId);
+      } else {
+        // Category was requested but does not exist - filter to impossible id so 0 products returned
+        query = query.eq("category_id", "00000000-0000-0000-0000-000000000000");
+      }
     }
 
     if (featured === "true" || featured === true) {

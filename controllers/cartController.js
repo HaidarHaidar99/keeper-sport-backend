@@ -152,18 +152,34 @@ const fetchFormattedCartData = async (cartId) => {
 
   const productIds = (items || []).map((i) => i.product_id).filter(Boolean);
   let mediaMap = new Map();
+  let variantsByProduct = new Map();
 
   if (productIds.length > 0) {
-    const { data: mediaList } = await supabase
-      .from("product_media")
-      .select("product_id, storage_path, alt_text, is_cover")
-      .in("product_id", productIds)
-      .order("is_cover", { ascending: false });
+    const [mediaRes, variantsRes] = await Promise.all([
+      supabase
+        .from("product_media")
+        .select("product_id, storage_path, alt_text, is_cover")
+        .in("product_id", productIds)
+        .order("is_cover", { ascending: false }),
+      supabase
+        .from("product_variants")
+        .select("id, product_id, size_value, color_value, price, stock_quantity, is_active")
+        .in("product_id", productIds)
+        .eq("is_active", true)
+        .order("sort_order", { ascending: true })
+    ]);
 
-    (mediaList || []).forEach((m) => {
+    (mediaRes.data || []).forEach((m) => {
       if (!mediaMap.has(m.product_id)) {
         mediaMap.set(m.product_id, m.storage_path);
       }
+    });
+
+    (variantsRes.data || []).forEach((v) => {
+      if (!variantsByProduct.has(v.product_id)) {
+        variantsByProduct.set(v.product_id, []);
+      }
+      variantsByProduct.get(v.product_id).push(v);
     });
   }
 
@@ -173,6 +189,8 @@ const fetchFormattedCartData = async (cartId) => {
   const formattedItems = (items || []).map((item) => {
     const prod = item.products;
     const variant = item.product_variants;
+    const prodVariants = variantsByProduct.get(item.product_id) || [];
+    const requiresVariantSelection = prodVariants.length > 0 && !item.selected_variant_id;
     const unitPrice = variant?.price ? parseFloat(variant.price) : parseFloat(prod?.base_price || 0);
     const lineTotal = unitPrice * item.quantity;
     subtotal += lineTotal;
@@ -183,6 +201,8 @@ const fetchFormattedCartData = async (cartId) => {
       productId: item.product_id,
       variantId: item.selected_variant_id,
       selectedVariantId: item.selected_variant_id,
+      requiresVariantSelection,
+      availableVariants: prodVariants,
       productName: prod?.name || "Product",
       productSlug: prod?.slug || "",
       coverImage: mediaMap.get(item.product_id) || null,
@@ -201,8 +221,10 @@ const fetchFormattedCartData = async (cartId) => {
         : null,
       variant: variant
         ? {
+            id: variant.id,
             size: variant.size_value,
-            color: variant.color_value
+            color: variant.color_value,
+            stock_quantity: variant.stock_quantity
           }
         : null,
       selectedSize: variant?.size_value || null,
@@ -210,7 +232,7 @@ const fetchFormattedCartData = async (cartId) => {
       printedName: item.printed_name,
       printedNumber: item.printed_number,
       badge: item.badge,
-      inStock: prod ? prod.stock_quantity >= item.quantity : false
+      inStock: variant ? variant.stock_quantity >= item.quantity : (prod ? prod.stock_quantity >= item.quantity : false)
     };
   });
 
@@ -275,39 +297,29 @@ const addToCart = async (req, res) => {
       const availSizes = Array.from(new Set(variants.map((v) => v.size_value).filter(Boolean)));
       const availColors = Array.from(new Set(variants.map((v) => v.color_value).filter(Boolean)));
 
-      // Required size check if variants have size options
-      if (availSizes.length > 0 && !size && !variantId) {
-        return res.status(400).json({
-          success: false,
-          message: "Please select a size."
+      // If specific size, color, or variantId is passed, resolve matching variant
+      if (variantId || size || color) {
+        const matched = variants.find((v) => {
+          if (variantId) return v.id === variantId;
+          const sizeMatch = !availSizes.length || v.size_value === size;
+          const colorMatch = !availColors.length || v.color_value === color;
+          return sizeMatch && colorMatch;
         });
+
+        if (!matched) {
+          return res.status(400).json({
+            success: false,
+            message: "Selected product option is not available."
+          });
+        }
+
+        resolvedVariantId = matched.id;
+        availableStock = matched.stock_quantity;
+      } else {
+        // Deferred variant selection: allowed in schema (selected_variant_id is nullable)
+        resolvedVariantId = null;
+        availableStock = product.stock_quantity > 0 ? product.stock_quantity : variants.reduce((sum, v) => sum + (v.stock_quantity || 0), 0);
       }
-
-      // Required color check if variants have color options
-      if (availColors.length > 0 && !color && !variantId) {
-        return res.status(400).json({
-          success: false,
-          message: "Please select a color."
-        });
-      }
-
-      // Match exact variant
-      const matched = variants.find((v) => {
-        if (variantId) return v.id === variantId;
-        const sizeMatch = !availSizes.length || v.size_value === size;
-        const colorMatch = !availColors.length || v.color_value === color;
-        return sizeMatch && colorMatch;
-      });
-
-      if (!matched) {
-        return res.status(400).json({
-          success: false,
-          message: "Selected product option is not available."
-        });
-      }
-
-      resolvedVariantId = matched.id;
-      availableStock = matched.stock_quantity;
     }
 
     // Check if available stock is zero
@@ -703,10 +715,100 @@ const clearCart = async (req, res) => {
   }
 };
 
+/**
+ * Update Cart Item Variant (Resolve deferred size/color choice)
+ * PUT /api/cart/items/:itemId/variant
+ * Body: { variantId, size, color }
+ */
+const updateCartItemVariant = async (req, res) => {
+  try {
+    const { itemId } = req.params;
+    const { variantId, size, color } = req.body;
+    const cartInfo = await getOrCreateCart(req, res);
+    const cartId = cartInfo.cartId;
+
+    // Verify item exists in this cart
+    const { data: item, error: itemErr } = await supabase
+      .from("cart_items")
+      .select("id, product_id, quantity, cart_id")
+      .eq("id", itemId)
+      .eq("cart_id", cartId)
+      .maybeSingle();
+
+    if (itemErr || !item) {
+      return res.status(404).json({ success: false, message: "Cart item not found." });
+    }
+
+    // Fetch active variants for this product
+    const { data: variants } = await supabase
+      .from("product_variants")
+      .select("*")
+      .eq("product_id", item.product_id)
+      .eq("is_active", true);
+
+    if (!variants || variants.length === 0) {
+      return res.status(400).json({ success: false, message: "Product has no variant options." });
+    }
+
+    const matchedVariant = variants.find((v) => {
+      if (variantId) return v.id === variantId;
+      const sMatch = !v.size_value || v.size_value === size;
+      const cMatch = !v.color_value || v.color_value === color;
+      return sMatch && cMatch;
+    });
+
+    if (!matchedVariant) {
+      return res.status(400).json({ success: false, message: "Selected size/color option is not available." });
+    }
+
+    if (matchedVariant.stock_quantity <= 0) {
+      return res.status(400).json({ success: false, message: "Selected option is out of stock." });
+    }
+
+    // Check if another cart line with this same variant already exists
+    const { data: existingSameVariant } = await supabase
+      .from("cart_items")
+      .select("id, quantity")
+      .eq("cart_id", cartId)
+      .eq("product_id", item.product_id)
+      .eq("selected_variant_id", matchedVariant.id)
+      .neq("id", itemId)
+      .maybeSingle();
+
+    if (existingSameVariant) {
+      const mergedQty = Math.min(matchedVariant.stock_quantity, existingSameVariant.quantity + item.quantity);
+      await supabase.from("cart_items").update({ quantity: mergedQty, updated_at: new Date().toISOString() }).eq("id", existingSameVariant.id);
+      await supabase.from("cart_items").delete().eq("id", itemId);
+    } else {
+      const safeQty = Math.min(matchedVariant.stock_quantity, item.quantity);
+      await supabase.from("cart_items").update({ selected_variant_id: matchedVariant.id, quantity: safeQty, updated_at: new Date().toISOString() }).eq("id", itemId);
+    }
+
+    const cartData = await fetchFormattedCartData(cartId);
+    return res.json({
+      success: true,
+      message: "Size updated successfully.",
+      cart: {
+        id: cartId,
+        items: cartData.items,
+        cartCount: cartData.cartCount,
+        subtotal: cartData.subtotal
+      },
+      items: cartData.items,
+      cartCount: cartData.cartCount,
+      subtotal: cartData.subtotal
+    });
+  } catch (err) {
+    console.error("updateCartItemVariant error:", err);
+    return res.status(500).json({ success: false, message: err.message || "Failed to update item size." });
+  }
+};
+
 module.exports = {
   addToCart,
   getCart,
   updateCartItemQuantity,
+  updateCartItemVariant,
   removeCartItem,
   clearCart,
   fetchFormattedCartData,

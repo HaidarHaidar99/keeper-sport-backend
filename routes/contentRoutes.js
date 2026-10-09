@@ -9,6 +9,9 @@ router.get("/hero-slides", contentController.getHeroSlides);
 router.get("/offer-bars", contentController.getOfferBars);
 router.get("/categories", contentController.getCategories);
 router.get("/offers", contentController.getOffers);
+router.get("/homepage-story", contentController.getHomepageStory);
+router.get("/location", contentController.getLocationSettings);
+router.get("/social-media", contentController.getSocialSettings);
 router.get("/reviews", contentController.getPublicReviews);
 router.post("/contact", optionalAuth, contentController.submitContactMessage);
 

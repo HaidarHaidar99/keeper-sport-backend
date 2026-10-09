@@ -154,6 +154,21 @@ const createOrder = async (req, res) => {
         variant = vList?.[0] || null;
       }
 
+      // Check if product requires variants
+      const { data: prodVariants } = await supabase
+        .from("product_variants")
+        .select("id")
+        .eq("product_id", product.id)
+        .eq("is_active", true)
+        .limit(1);
+
+      if (prodVariants && prodVariants.length > 0 && !variant) {
+        return res.status(400).json({
+          success: false,
+          message: `Please select a size/color for "${product.name}" before completing your order.`
+        });
+      }
+
       // STRICT CHECKOUT-TIME STOCK REVALIDATION
       if (variant) {
         const variantDesc = [
