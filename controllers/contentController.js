@@ -47,13 +47,18 @@ const getSiteSettings = async (req, res) => {
     const settings = settingsRes.data;
     const resultSettings = {
       ...(settings || { site_name: "Keeper Sports", logo_path: null }),
+      email: settings?.email && !settings.email.includes("support@keepersportlb.com")
+        ? settings.email
+        : "keepersportlb@gmail.com",
+      location_address: settings?.location_address || "Hanaway Main Street, Tyre, South Lebanon",
       homepage_story: siteContent?.homepage_story || null,
       location: {
         ...(siteContent?.location || {}),
+        address: siteContent?.location?.address || "Hanaway Main Street, Tyre, South Lebanon",
         location_name: settings?.location_name || siteContent?.location?.location_name || "Keeper Sports",
-        location_url: settings?.location_url || siteContent?.location?.location_url || "",
-        phone_number: settings?.phone_number || siteContent?.location?.phone_number || "",
-        whatsapp_number: settings?.whatsapp_number || siteContent?.location?.whatsapp_number || ""
+        location_url: settings?.location_url || siteContent?.location?.location_url || "https://maps.app.goo.gl/mffodPxBbR573zzk8",
+        phone_number: settings?.phone_number || siteContent?.location?.phone_number || "+961 70 973 086",
+        whatsapp_number: settings?.whatsapp_number || siteContent?.location?.whatsapp_number || "+961 70 973 086"
       },
       social_media: {
         ...(siteContent?.social_media || {}),
