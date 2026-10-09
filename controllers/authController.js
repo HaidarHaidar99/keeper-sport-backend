@@ -5,6 +5,12 @@ const { OAuth2Client } = require("google-auth-library");
 const supabase = require("../config/supabase");
 const { COOKIE_NAME, getCookieOptions, sanitizeUser } = require("../middleware/authMiddleware");
 const { sendVerificationEmail, sendPasswordResetEmail } = require("../utils/emailService");
+const {
+  getClientIp,
+  checkVerificationResendLimit,
+  recordEmailEvent,
+  checkPasswordResetLimit
+} = require("../utils/rateLimitService");
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -95,10 +101,10 @@ const register = async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const password_hash = await bcrypt.hash(password, salt);
 
-    // 4. Generate secure email verification token
+    // 4. Generate secure email verification token (strictly 5-minute expiration)
     const rawToken = crypto.randomBytes(32).toString("hex");
     const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24 hours
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString(); // exactly 5 minutes
 
     // 5. Create local unverified user
     const { data: newUser, error: insertError } = await supabase
@@ -125,12 +131,20 @@ const register = async (req, res) => {
       });
     }
 
-    // 6. Send verification email through Resend (non-blocking failure safe)
-    await sendVerificationEmail({
+    // 6. Send verification email through Resend and record event
+    const emailResult = await sendVerificationEmail({
       email: normalizedEmail,
       fullName: full_name.trim(),
       rawToken
     });
+
+    if (emailResult.success) {
+      await recordEmailEvent({
+        email: normalizedEmail,
+        eventType: "verification_initial",
+        ipAddress: getClientIp(req)
+      });
+    }
 
     return res.status(201).json({
       success: true,
@@ -272,6 +286,7 @@ const verifyEmail = async (req, res) => {
     if (user.is_verified) {
       return res.json({
         success: true,
+        already_verified: true,
         message: "Your email is already verified. You can sign in now."
       });
     }
@@ -281,12 +296,12 @@ const verifyEmail = async (req, res) => {
         success: false,
         expired: true,
         email: user.email,
-        message: "This verification link has expired. Please request a new one."
+        message: "This verification link has expired (5-minute limit). Please request a new one."
       });
     }
 
-    // Mark as verified and invalidate token
-    const { error: updateError } = await supabase
+    // Atomically mark as verified and invalidate token
+    const { data: updatedUser, error: updateError } = await supabase
       .from("users")
       .update({
         is_verified: true,
@@ -294,13 +309,16 @@ const verifyEmail = async (req, res) => {
         verification_token_expires_at: null,
         updated_at: new Date().toISOString()
       })
-      .eq("id", user.id);
+      .eq("id", user.id)
+      .eq("verification_token_hash", tokenHash)
+      .select("id")
+      .maybeSingle();
 
-    if (updateError) {
+    if (updateError || !updatedUser) {
       console.error("Database error updating user verification status:", updateError);
-      return res.status(500).json({
+      return res.status(400).json({
         success: false,
-        message: "Could not complete email verification. Please try again."
+        message: "Invalid or already used verification link. Please request a new one."
       });
     }
 
@@ -333,6 +351,7 @@ const resendVerification = async (req, res) => {
     }
 
     const normalizedEmail = email.trim().toLowerCase();
+    const clientIp = getClientIp(req);
 
     const { data: user, error } = await supabase
       .from("users")
@@ -364,24 +383,39 @@ const resendVerification = async (req, res) => {
       });
     }
 
-    // Cooldown rate limit: prevent duplicate spam within 60 seconds
-    if (user.verification_token_expires_at) {
-      const remainingMs = new Date(user.verification_token_expires_at).getTime() - Date.now();
-      const elapsedMs = 24 * 60 * 60 * 1000 - remainingMs;
-      if (elapsedMs > 0 && elapsedMs < 60 * 1000) {
-        return res.status(429).json({
-          success: false,
-          message: "Please wait at least 60 seconds before requesting another verification email."
-        });
-      }
+    // Rate limiting policy: 60s cooldown, max 3 additional resends per rolling 60-minute window
+    const rateCheck = await checkVerificationResendLimit(user.email, clientIp);
+    if (!rateCheck.allowed) {
+      return res.status(429).json({
+        success: false,
+        reason: rateCheck.reason,
+        remainingSeconds: rateCheck.remainingSeconds,
+        message: rateCheck.message
+      });
     }
 
-    // Generate new token
+    // Generate replacement token (strictly 5 minutes)
     const rawToken = crypto.randomBytes(32).toString("hex");
     const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
 
-    await supabase
+    // Send email via Resend BEFORE updating the database to preserve the existing valid link if delivery fails
+    const emailResult = await sendVerificationEmail({
+      email: user.email,
+      fullName: user.full_name,
+      rawToken
+    });
+
+    if (!emailResult.success) {
+      console.error("Failed to deliver verification resend via Resend:", emailResult.error);
+      return res.status(500).json({
+        success: false,
+        message: "Could not send verification email at this time. Please try again later."
+      });
+    }
+
+    // Resend accepted delivery: atomically invalidate previous link and record replacement link
+    const { error: updateError } = await supabase
       .from("users")
       .update({
         verification_token_hash: tokenHash,
@@ -390,10 +424,19 @@ const resendVerification = async (req, res) => {
       })
       .eq("id", user.id);
 
-    await sendVerificationEmail({
+    if (updateError) {
+      console.error("Database error updating verification token:", updateError);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to update verification link state. Please try again."
+      });
+    }
+
+    // Record rate limit event
+    await recordEmailEvent({
       email: user.email,
-      fullName: user.full_name,
-      rawToken
+      eventType: "verification_resend",
+      ipAddress: clientIp
     });
 
     return res.json({
@@ -412,8 +455,15 @@ const resendVerification = async (req, res) => {
 /**
  * Request Password Reset
  * POST /api/auth/forgot-password
+ * Strict email enumeration protection: identical response and timing jitter for all emails
  */
 const forgotPassword = async (req, res) => {
+  const startTime = Date.now();
+  const genericSuccess = {
+    success: true,
+    message: "If an account exists with this email address, we'll send you a password reset link. Please check your inbox and spam folder."
+  };
+
   try {
     const { email } = req.body;
 
@@ -425,6 +475,7 @@ const forgotPassword = async (req, res) => {
     }
 
     const normalizedEmail = email.trim().toLowerCase();
+    const clientIp = getClientIp(req);
 
     const { data: user, error } = await supabase
       .from("users")
@@ -432,60 +483,61 @@ const forgotPassword = async (req, res) => {
       .eq("email", normalizedEmail)
       .maybeSingle();
 
-    if (error) {
-      console.error("Database error looking up user for password reset:", error);
-      return res.status(500).json({
-        success: false,
-        message: "Database check failed."
-      });
-    }
+    if (!error && user && user.auth_provider === "local") {
+      // Check rate limit: 60s cooldown, max 3 additional resends per rolling 60 minutes
+      const rateCheck = await checkPasswordResetLimit(user.email, clientIp);
 
-    // Security: Do not expose if account exists
-    const genericSuccess = {
-      success: true,
-      message: "If an account exists for this email, a password reset link has been sent."
-    };
+      if (rateCheck.allowed) {
+        // Generate replacement reset token (strictly 5 minutes)
+        const rawToken = crypto.randomBytes(32).toString("hex");
+        const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
+        const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
 
-    if (!user || user.auth_provider !== "local") {
-      return res.json(genericSuccess);
-    }
+        // Send email via Resend BEFORE updating database to preserve existing link if sending fails
+        const emailResult = await sendPasswordResetEmail({
+          email: user.email,
+          fullName: user.full_name,
+          rawToken
+        });
 
-    // Rate limiting cooldown: 60s
-    if (user.password_reset_token_expires_at) {
-      const remainingMs = new Date(user.password_reset_token_expires_at).getTime() - Date.now();
-      const elapsedMs = 60 * 60 * 1000 - remainingMs;
-      if (elapsedMs > 0 && elapsedMs < 60 * 1000) {
-        return res.json(genericSuccess);
+        if (emailResult.success) {
+          // Atomically update user record with new token hash and expiration
+          await supabase
+            .from("users")
+            .update({
+              password_reset_token_hash: tokenHash,
+              password_reset_token_expires_at: expiresAt,
+              updated_at: new Date().toISOString()
+            })
+            .eq("id", user.id);
+
+          // Persist email issuance event in database
+          await recordEmailEvent({
+            email: user.email,
+            eventType: "password_reset",
+            ipAddress: clientIp
+          });
+        }
       }
     }
 
-    // Generate secure reset token
-    const rawToken = crypto.randomBytes(32).toString("hex");
-    const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
-    const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1 hour
-
-    await supabase
-      .from("users")
-      .update({
-        password_reset_token_hash: tokenHash,
-        password_reset_token_expires_at: expiresAt,
-        updated_at: new Date().toISOString()
-      })
-      .eq("id", user.id);
-
-    await sendPasswordResetEmail({
-      email: user.email,
-      fullName: user.full_name,
-      rawToken
-    });
+    // Timing jitter protection: normalize response latency to 220-300ms to defeat side-channel timing analysis
+    const elapsed = Date.now() - startTime;
+    const targetDuration = 220 + Math.floor(Math.random() * 80);
+    if (elapsed < targetDuration) {
+      await new Promise((resolve) => setTimeout(resolve, targetDuration - elapsed));
+    }
 
     return res.json(genericSuccess);
   } catch (err) {
     console.error("Forgot password error:", err);
-    return res.status(500).json({
-      success: false,
-      message: "An unexpected error occurred while requesting password reset."
-    });
+    // Even on internal errors, apply jitter and return generic response to prevent information leakage
+    const elapsed = Date.now() - startTime;
+    const targetDuration = 220 + Math.floor(Math.random() * 80);
+    if (elapsed < targetDuration) {
+      await new Promise((resolve) => setTimeout(resolve, targetDuration - elapsed));
+    }
+    return res.json(genericSuccess);
   }
 };
 
@@ -535,7 +587,7 @@ const verifyResetToken = async (req, res) => {
         success: false,
         valid: false,
         expired: true,
-        message: "Password reset link has expired. Please request a new one."
+        message: "Password reset link has expired (5-minute limit). Please request a new one."
       });
     }
 
@@ -624,7 +676,8 @@ const resetPassword = async (req, res) => {
     if (user.password_reset_token_expires_at && new Date(user.password_reset_token_expires_at) < new Date()) {
       return res.status(400).json({
         success: false,
-        message: "Password reset link has expired. Please request a new one."
+        expired: true,
+        message: "Password reset link has expired (5-minute limit). Please request a new one."
       });
     }
 
@@ -632,8 +685,8 @@ const resetPassword = async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const new_password_hash = await bcrypt.hash(password, salt);
 
-    // Invalidate reset token and update password
-    const { error: updateError } = await supabase
+    // Atomically invalidate reset token and update password (single-use consumption)
+    const { data: updatedUser, error: updateError } = await supabase
       .from("users")
       .update({
         password_hash: new_password_hash,
@@ -641,19 +694,22 @@ const resetPassword = async (req, res) => {
         password_reset_token_expires_at: null,
         updated_at: new Date().toISOString()
       })
-      .eq("id", user.id);
+      .eq("id", user.id)
+      .eq("password_reset_token_hash", tokenHash)
+      .select("id")
+      .maybeSingle();
 
-    if (updateError) {
+    if (updateError || !updatedUser) {
       console.error("Database error updating password:", updateError);
-      return res.status(500).json({
+      return res.status(400).json({
         success: false,
-        message: "Could not update password. Please try again."
+        message: "Invalid or already used password reset link."
       });
     }
 
     return res.json({
       success: true,
-      message: "Password changed successfully."
+      message: "Password changed successfully. You can now sign in with your new password."
     });
   } catch (err) {
     console.error("Reset password error:", err);

@@ -77,7 +77,7 @@ const getDashboardOverview = async (req, res) => {
       // Out of Stock Products
       supabase.from("products").select("id", { count: "exact", head: true }).eq("is_active", true).lte("stock_quantity", 0),
       // Unread Admin Notifications
-      supabase.from("notifications").select("id", { count: "exact", head: true }).eq("recipient_type", "admin").eq("is_read", false),
+      supabase.from("notifications").select("id", { count: "exact", head: true }).eq("recipient_type", "admin").neq("type", "system").eq("is_read", false),
       // Total Reviews
       supabase.from("product_reviews").select("id", { count: "exact", head: true }),
       // Recent Orders (limit 5)
@@ -87,7 +87,7 @@ const getDashboardOverview = async (req, res) => {
       // Low stock product items
       supabase.from("products").select("id, name, slug, stock_quantity, base_price, is_active").lte("stock_quantity", lowStockThreshold).order("stock_quantity", { ascending: true }).limit(6),
       // Recent notifications (limit 5)
-      supabase.from("notifications").select("id, title, message, type, is_read, created_at").eq("recipient_type", "admin").order("created_at", { ascending: false }).limit(5),
+      supabase.from("notifications").select("id, title, message, type, is_read, created_at").eq("recipient_type", "admin").neq("type", "system").order("created_at", { ascending: false }).limit(5),
       // Unread contact form notifications
       supabase.from("notifications").select("id", { count: "exact", head: true }).eq("recipient_type", "admin").in("reference_type", ["contact_message", "contact"]).eq("is_read", false)
     ]);
@@ -1589,14 +1589,15 @@ const deleteReview = async (req, res) => {
 const getNotificationsAdmin = async (req, res) => {
   try {
     const [totalRes, unreadRes] = await Promise.all([
-      supabase.from("notifications").select("id", { count: "exact", head: true }).eq("recipient_type", "admin"),
-      supabase.from("notifications").select("id", { count: "exact", head: true }).eq("recipient_type", "admin").eq("is_read", false)
+      supabase.from("notifications").select("id", { count: "exact", head: true }).eq("recipient_type", "admin").neq("type", "system"),
+      supabase.from("notifications").select("id", { count: "exact", head: true }).eq("recipient_type", "admin").neq("type", "system").eq("is_read", false)
     ]);
 
     const { data, error } = await supabase
       .from("notifications")
       .select("*")
       .eq("recipient_type", "admin")
+      .neq("type", "system")
       .order("created_at", { ascending: false })
       .limit(50);
 
