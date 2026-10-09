@@ -18,9 +18,9 @@ const defaultContent = {
   },
   location: {
     is_active: true,
-    location_name: "Keeper Sports Headquarters",
-    address: "Beirut, Lebanon",
-    location_url: "https://maps.google.com/?q=Beirut+Lebanon",
+    location_name: "Keeper Sports Store",
+    address: "Hanaway Main Street, Tyre, South Lebanon",
+    location_url: "https://maps.app.goo.gl/mffodPxBbR573zzk8",
     description: "Experience authentic goalkeeper gloves, official club kits, and matchday gear in person.",
     phone_number: "+961 70 000 000",
     whatsapp_number: "+961 70 000 000"
