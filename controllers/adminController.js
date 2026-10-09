@@ -475,7 +475,11 @@ const getSiteSettingsAdmin = async (req, res) => {
       .maybeSingle();
 
     if (error) throw error;
-    return res.json({ success: true, settings: data });
+    const settings = data ? {
+      ...data,
+      logo_light_path: data.logo_light_path || data.favicon_path || ""
+    } : null;
+    return res.json({ success: true, settings });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
   }
@@ -518,6 +522,10 @@ const updateSiteSettingsAdmin = async (req, res) => {
       }
     }
 
+    if (req.body.logo_light_path !== undefined) {
+      updates.favicon_path = req.body.logo_light_path;
+    }
+
     if (updates.delivery_fee !== undefined) {
       updates.delivery_fee = parseFloat(updates.delivery_fee) || 0;
     }
@@ -541,7 +549,11 @@ const updateSiteSettingsAdmin = async (req, res) => {
     }
 
     clearContentCache("settings");
-    return res.json({ success: true, settings: data, message: "Site settings updated successfully." });
+    const formattedSettings = data ? {
+      ...data,
+      logo_light_path: data.logo_light_path || data.favicon_path || ""
+    } : data;
+    return res.json({ success: true, settings: formattedSettings, message: "Site settings updated successfully." });
   } catch (err) {
     console.error("updateSiteSettingsAdmin unexpected error:", err);
     return res.status(500).json({ success: false, message: err.message });

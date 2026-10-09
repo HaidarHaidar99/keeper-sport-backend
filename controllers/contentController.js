@@ -47,6 +47,7 @@ const getSiteSettings = async (req, res) => {
     const settings = settingsRes.data;
     const resultSettings = {
       ...(settings || { site_name: "Keeper Sports", logo_path: null }),
+      logo_light_path: settings?.logo_light_path || settings?.favicon_path || null,
       email: settings?.email && !settings.email.includes("support@keepersportlb.com")
         ? settings.email
         : "keepersportlb@gmail.com",
