@@ -534,13 +534,24 @@ const getProductBySlugOrId = async (req, res) => {
       });
     }
 
-    // Fetch media, variants, category, rating, reviews
-    const [mediaRes, variantsRes, catRes, ratingRes, reviewsRes] = await Promise.all([
+    const userId = req.user?.id || null;
+    const guestIdentifier = req.headers["x-guest-identifier"] || req.cookies?.keeper_guest_cart || null;
+
+    let favPromise = Promise.resolve({ data: null });
+    if (userId) {
+      favPromise = supabase.from("favorites").select("id").eq("product_id", product.id).eq("user_id", userId).maybeSingle();
+    } else if (guestIdentifier) {
+      favPromise = supabase.from("favorites").select("id").eq("product_id", product.id).eq("guest_identifier", guestIdentifier).maybeSingle();
+    }
+
+    // Fetch media, variants, category, rating, reviews, and favorite status
+    const [mediaRes, variantsRes, catRes, ratingRes, reviewsRes, favRes] = await Promise.all([
       supabase.from("product_media").select("*").eq("product_id", product.id).order("sort_order", { ascending: true }),
       supabase.from("product_variants").select("*").eq("product_id", product.id).eq("is_active", true).order("sort_order", { ascending: true }),
       supabase.from("categories").select("id, name, slug").eq("id", product.category_id).maybeSingle(),
       supabase.from("product_rating_summary").select("average_rating, ratings_count").eq("product_id", product.id).maybeSingle(),
-      supabase.from("product_reviews").select("id, rating, review_text, created_at, user_id").eq("product_id", product.id).eq("is_visible", true).order("created_at", { ascending: false }).limit(20)
+      supabase.from("product_reviews").select("id, rating, review_text, created_at, user_id").eq("product_id", product.id).eq("is_visible", true).order("created_at", { ascending: false }).limit(20),
+      favPromise
     ]);
 
     const lowStockThreshold = 5;
@@ -559,6 +570,7 @@ const getProductBySlugOrId = async (req, res) => {
         media: mediaRes.data || [],
         variants: variantsRes.data || [],
         pricing,
+        isFavorited: Boolean(favRes?.data),
         stock: {
           quantity: stockQty,
           status: stockStatus,
