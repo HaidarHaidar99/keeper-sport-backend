@@ -219,6 +219,7 @@ const getProducts = async (req, res) => {
     // 5. Query relations in parallel: Media, Ratings, Active Offers, User Favorites
     const now = new Date().toISOString();
     const userId = req.user?.id || null;
+    const guestIdentifier = req.headers["x-guest-identifier"] || req.cookies?.keeper_guest_cart || null;
 
     const [mediaRes, ratingsRes, offerProdsRes, favRes] = await Promise.all([
       // Media
@@ -241,9 +242,11 @@ const getProducts = async (req, res) => {
         .select("offer_id, product_id, offers(id, title, discount_type, discount_value, starts_at, ends_at, is_visible)")
         .in("product_id", productIds),
 
-      // Favorites for user
+      // Favorites for user or guest
       userId
         ? supabase.from("favorites").select("product_id").eq("user_id", userId).in("product_id", productIds)
+        : guestIdentifier
+        ? supabase.from("favorites").select("product_id").eq("guest_identifier", guestIdentifier).in("product_id", productIds)
         : Promise.resolve({ data: [] })
     ]);
 
@@ -396,6 +399,7 @@ const getFeaturedProducts = async (req, res) => {
 
     const productIds = productsList.map((p) => p.id);
     const userId = req.user?.id || null;
+    const guestIdentifier = req.headers["x-guest-identifier"] || req.cookies?.keeper_guest_cart || null;
     const now = new Date().toISOString();
 
     const [mediaRes, ratingsRes, offerProdsRes, favRes] = await Promise.all([
@@ -418,6 +422,8 @@ const getFeaturedProducts = async (req, res) => {
 
       userId
         ? supabase.from("favorites").select("product_id").eq("user_id", userId).in("product_id", productIds)
+        : guestIdentifier
+        ? supabase.from("favorites").select("product_id").eq("guest_identifier", guestIdentifier).in("product_id", productIds)
         : Promise.resolve({ data: [] })
     ]);
 
