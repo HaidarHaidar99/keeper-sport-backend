@@ -369,7 +369,7 @@ const createOrder = async (req, res) => {
 
     return res.status(201).json({
       success: true,
-      message: "Order placed successfully!",
+      message: "Your order has been submitted successfully. For any inquiries, please contact us on WhatsApp.",
       order: {
         id: newOrder.id,
         order_number: newOrder.order_number,
