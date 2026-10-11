@@ -205,6 +205,7 @@ const createOrder = async (req, res) => {
       }
 
       // Get cover image
+      let coverPath = null;
       const { data: media } = await supabase
         .from("product_media")
         .select("storage_path")
@@ -212,6 +213,12 @@ const createOrder = async (req, res) => {
         .order("is_cover", { ascending: false })
         .limit(1)
         .maybeSingle();
+
+      if (media?.storage_path) {
+        coverPath = media.storage_path;
+      } else if (item.image || item.coverImage || item.image_url) {
+        coverPath = item.image || item.coverImage || item.image_url;
+      }
 
       const unitPrice = variant?.price ? Number(variant.price) : Number(product.base_price || 0);
 
@@ -231,7 +238,7 @@ const createOrder = async (req, res) => {
         variant_id: variant?.id || vId || null,
         product_name_snapshot: product.name,
         category_name_snapshot: product.category?.name || "General",
-        cover_image_path_snapshot: media?.storage_path || null,
+        cover_image_path_snapshot: coverPath || item.image || item.coverImage || null,
         size_value_snapshot: item.size || item.size_value || variant?.size_value || null,
         color_value_snapshot: item.color || item.color_value || variant?.color_value || null,
         quantity: qty,
