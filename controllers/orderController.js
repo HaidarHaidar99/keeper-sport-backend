@@ -549,10 +549,98 @@ const cancelOrder = async (req, res) => {
   }
 };
 
+/**
+ * Customer / Guest Delete Order
+ * DELETE /api/orders/:id
+ */
+const deleteOrder = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user?.id || null;
+    const userRole = req.user?.role || null;
+    const rawTokensHeader = req.headers["x-guest-order-tokens"] || req.query.guestTokens || null;
+
+    if (!id) {
+      return res.status(400).json({ success: false, message: "Order ID is required." });
+    }
+
+    // 1. Fetch order to verify ownership
+    const { data: order, error: fetchErr } = await supabase
+      .from("orders")
+      .select("id, order_number, user_id, guest_access_token_hash, status")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (fetchErr || !order) {
+      return res.status(404).json({ success: false, message: "Order not found." });
+    }
+
+    // Authorization verification
+    let isAuthorized = false;
+    if (userRole === "admin") {
+      isAuthorized = true;
+    } else if (userId && order.user_id === userId) {
+      isAuthorized = true;
+    } else if (order.guest_access_token_hash && rawTokensHeader) {
+      let guestTokens = [];
+      try {
+        const parsed = typeof rawTokensHeader === "string" ? JSON.parse(rawTokensHeader) : rawTokensHeader;
+        if (Array.isArray(parsed)) {
+          guestTokens = parsed.filter((t) => typeof t === "string" && t.length > 0);
+        }
+      } catch {
+        guestTokens = String(rawTokensHeader).split(",").map((t) => t.trim()).filter(Boolean);
+      }
+
+      for (const t of guestTokens) {
+        if (!t || typeof t !== "string") continue;
+        const hash = crypto.createHash("sha256").update(t).digest("hex");
+        if (hash === order.guest_access_token_hash) {
+          isAuthorized = true;
+          break;
+        }
+      }
+    }
+
+    if (!isAuthorized) {
+      return res.status(403).json({ success: false, message: "Unauthorized to delete this order." });
+    }
+
+    // Safely delete order dependencies first (order_status_history, order_items, then orders)
+    try {
+      await supabase.from("order_status_history").delete().eq("order_id", id);
+    } catch (e) {
+      console.warn("Could not delete order_status_history:", e);
+    }
+
+    try {
+      await supabase.from("order_items").delete().eq("order_id", id);
+    } catch (e) {
+      console.warn("Could not delete order_items:", e);
+    }
+
+    const { error: delErr } = await supabase.from("orders").delete().eq("id", id);
+
+    if (delErr) {
+      console.error("Error deleting order:", delErr);
+      return res.status(500).json({ success: false, message: "Failed to delete order from database." });
+    }
+
+    return res.json({
+      success: true,
+      message: `Order #${order.order_number} deleted successfully.`
+    });
+  } catch (err) {
+    console.error("Unexpected error in deleteOrder:", err);
+    return res.status(500).json({ success: false, message: "Server error deleting order." });
+  }
+};
+
 module.exports = {
   getUserOrders,
   createOrder,
   getOrderById,
-  cancelOrder
+  cancelOrder,
+  deleteOrder
 };
 

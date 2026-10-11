@@ -1404,6 +1404,55 @@ const updateOrderStatus = async (req, res) => {
   }
 };
 
+/**
+ * DELETE /api/admin/orders/:id
+ */
+const deleteOrderAdmin = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!id) {
+      return res.status(400).json({ success: false, message: "Order ID is required." });
+    }
+
+    const { data: order, error: findErr } = await supabase
+      .from("orders")
+      .select("id, order_number")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (findErr || !order) {
+      return res.status(404).json({ success: false, message: "Order not found." });
+    }
+
+    // Safely delete order dependencies first
+    try {
+      await supabase.from("order_status_history").delete().eq("order_id", id);
+    } catch (e) {
+      console.warn("Could not delete order_status_history:", e);
+    }
+
+    try {
+      await supabase.from("order_items").delete().eq("order_id", id);
+    } catch (e) {
+      console.warn("Could not delete order_items:", e);
+    }
+
+    const { error: delErr } = await supabase.from("orders").delete().eq("id", id);
+    if (delErr) {
+      console.error("Error deleting order:", delErr);
+      return res.status(500).json({ success: false, message: delErr.message });
+    }
+
+    return res.json({
+      success: true,
+      message: `Order #${order.order_number} has been deleted permanently.`
+    });
+  } catch (err) {
+    console.error("Error in deleteOrderAdmin:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 // =============================================================================
 // 8. USERS MANAGEMENT
 // =============================================================================
@@ -2139,6 +2188,7 @@ module.exports = {
   // Orders
   getOrdersAdmin,
   updateOrderStatus,
+  deleteOrderAdmin,
   // Users
   getUsersAdmin,
   updateUserRole,

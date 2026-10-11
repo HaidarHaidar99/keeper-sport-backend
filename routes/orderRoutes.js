@@ -5,7 +5,8 @@ const {
   getUserOrders,
   createOrder,
   getOrderById,
-  cancelOrder
+  cancelOrder,
+  deleteOrder
 } = require("../controllers/orderController");
 
 // Customer & Guest orders list
@@ -20,5 +21,8 @@ router.get("/:id", optionalAuth, getOrderById);
 // Customer cancel order (strictly pending orders only)
 router.patch("/:id/cancel", optionalAuth, cancelOrder);
 router.post("/:id/cancel", optionalAuth, cancelOrder);
+
+// Customer / Guest delete order
+router.delete("/:id", optionalAuth, deleteOrder);
 
 module.exports = router;

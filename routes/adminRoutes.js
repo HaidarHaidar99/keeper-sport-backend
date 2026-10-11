@@ -63,6 +63,7 @@ router.delete("/categories/:id", adminController.deleteCategory);
 // Orders
 router.get("/orders", adminController.getOrdersAdmin);
 router.patch("/orders/:id/status", adminController.updateOrderStatus);
+router.delete("/orders/:id", adminController.deleteOrderAdmin);
 
 // Users
 router.get("/users", adminController.getUsersAdmin);
