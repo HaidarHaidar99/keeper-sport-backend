@@ -389,7 +389,59 @@ const getFeaturedProducts = async (req, res) => {
       });
     }
 
-    const productsList = rawProducts || [];
+    let productsList = rawProducts || [];
+    if (productsList.length < 4) {
+      const { data: allActiveProds } = await supabase
+        .from("products")
+        .select("id, category_id, name, slug, brand, description, base_price, old_price, stock_quantity, is_premium, is_active, is_featured, is_best_seller, is_new_arrival, printing_available, badges_available, created_at")
+        .eq("is_active", true)
+        .order("created_at", { ascending: false })
+        .limit(60);
+
+      if (allActiveProds && allActiveProds.length > 0) {
+        const pickedIds = new Set(productsList.map((p) => p.id));
+        const findOne = (predicate) => {
+          return allActiveProds.find((p) => !pickedIds.has(p.id) && predicate(p));
+        };
+
+        const gloveProd = findOne((p) => {
+          const cat = categoriesMap.get(p.category_id);
+          const slug = cat?.slug || "";
+          return slug.includes("glove") || p.name.toLowerCase().includes("glove");
+        });
+        if (gloveProd) { productsList.push(gloveProd); pickedIds.add(gloveProd.id); }
+
+        const shirtProd = findOne((p) => {
+          const cat = categoriesMap.get(p.category_id);
+          const slug = cat?.slug || "";
+          return slug.includes("kit") || slug.includes("jersey") || p.name.toLowerCase().includes("shirt");
+        });
+        if (shirtProd) { productsList.push(shirtProd); pickedIds.add(shirtProd.id); }
+
+        const bootProd = findOne((p) => {
+          const cat = categoriesMap.get(p.category_id);
+          const slug = cat?.slug || "";
+          return slug.includes("shoe") || slug.includes("boot") || p.name.toLowerCase().includes("shoes") || p.name.toLowerCase().includes("vapor") || p.name.toLowerCase().includes("predator");
+        });
+        if (bootProd) { productsList.push(bootProd); pickedIds.add(bootProd.id); }
+
+        const ballProd = findOne((p) => {
+          const cat = categoriesMap.get(p.category_id);
+          const slug = cat?.slug || "";
+          return slug.includes("ball") || p.name.toLowerCase().includes("ball");
+        });
+        if (ballProd) { productsList.push(ballProd); pickedIds.add(ballProd.id); }
+
+        for (const p of allActiveProds) {
+          if (productsList.length >= 4) break;
+          if (!pickedIds.has(p.id)) {
+            productsList.push(p);
+            pickedIds.add(p.id);
+          }
+        }
+      }
+    }
+
     if (productsList.length === 0) {
       return res.json({
         success: true,
