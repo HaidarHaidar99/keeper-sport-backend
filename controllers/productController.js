@@ -152,6 +152,30 @@ const getProducts = async (req, res) => {
       query = query.gt("stock_quantity", 0);
     }
 
+    if (on_sale === "true" || on_sale === true) {
+      const now = new Date().toISOString();
+      const { data: activeOfferProds } = await supabase
+        .from("offer_products")
+        .select("product_id, offers(id, starts_at, ends_at, is_visible)")
+        .not("product_id", "is", null);
+
+      const activeOfferProductIds = (activeOfferProds || [])
+        .filter((op) => {
+          const o = op.offers;
+          if (!o || !o.is_visible) return false;
+          if (o.starts_at && new Date(o.starts_at) > new Date(now)) return false;
+          if (o.ends_at && new Date(o.ends_at) < new Date(now)) return false;
+          return true;
+        })
+        .map((op) => op.product_id);
+
+      if (activeOfferProductIds.length > 0) {
+        query = query.or(`id.in.(${activeOfferProductIds.join(",")}),old_price.gt.base_price`);
+      } else {
+        query = query.not("old_price", "is", null).filter("old_price", "gt", "base_price");
+      }
+    }
+
     if (min_price && !isNaN(parseFloat(min_price))) {
       query = query.gte("base_price", parseFloat(min_price));
     }
