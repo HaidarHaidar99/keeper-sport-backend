@@ -157,15 +157,30 @@ const createOrder = async (req, res) => {
       // Check if product requires variants
       const { data: prodVariants } = await supabase
         .from("product_variants")
-        .select("id")
+        .select("id, size_value, color_value")
         .eq("product_id", product.id)
-        .eq("is_active", true)
-        .limit(1);
+        .eq("is_active", true);
 
       if (prodVariants && prodVariants.length > 0 && !variant) {
+        const hasSizes = prodVariants.some((v) => v.size_value && v.size_value.trim() !== "");
+        const hasColors = prodVariants.some((v) => v.color_value && v.color_value.trim() !== "");
+        let msg = `Please select an option for "${product.name}" before completing your order.`;
+        if (hasSizes && !hasColors) {
+          msg = `Please select a size for "${product.name}" before completing your order.`;
+        } else if (hasColors && !hasSizes) {
+          msg = `Please select a color for "${product.name}" before completing your order.`;
+        } else if (hasSizes && hasColors) {
+          if (!item.size && !item.color) {
+            msg = `Please select a size and color for "${product.name}" before completing your order.`;
+          } else if (!item.size) {
+            msg = `Please select a size for "${product.name}" before completing your order.`;
+          } else {
+            msg = `Please select a color for "${product.name}" before completing your order.`;
+          }
+        }
         return res.status(400).json({
           success: false,
-          message: `Please select a size/color for "${product.name}" before completing your order.`
+          message: msg
         });
       }
 
