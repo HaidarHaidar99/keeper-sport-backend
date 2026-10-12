@@ -996,6 +996,132 @@ const getMe = async (req, res) => {
   });
 };
 
+/**
+ * Update Customer Profile
+ * PUT /api/auth/profile
+ */
+const updateProfile = async (req, res) => {
+  try {
+    const { full_name } = req.body || {};
+    if (!full_name || typeof full_name !== "string" || full_name.trim().length < 2) {
+      return res.status(400).json({
+        success: false,
+        message: "Full name must be at least 2 characters."
+      });
+    }
+
+    const { data: updated, error } = await supabase
+      .from("users")
+      .update({
+        full_name: full_name.trim(),
+        updated_at: new Date().toISOString()
+      })
+      .eq("id", req.user.id)
+      .select("id, full_name, email, role, auth_provider, is_verified, created_at, updated_at")
+      .single();
+
+    if (error) {
+      console.error("updateProfile db error:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to update profile."
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: "Profile updated successfully.",
+      user: sanitizeUser(updated)
+    });
+  } catch (err) {
+    console.error("updateProfile error:", err);
+    return res.status(500).json({
+      success: false,
+      message: "An unexpected error occurred while updating profile."
+    });
+  }
+};
+
+/**
+ * Change Customer Password
+ * POST /api/auth/change-password
+ */
+const changePassword = async (req, res) => {
+  try {
+    const { current_password, new_password, confirm_password } = req.body || {};
+
+    if (!current_password || !new_password) {
+      return res.status(400).json({
+        success: false,
+        message: "Current password and new password are required."
+      });
+    }
+
+    if (new_password.length < 8) {
+      return res.status(400).json({
+        success: false,
+        message: "New password must be at least 8 characters long."
+      });
+    }
+
+    if (new_password !== confirm_password) {
+      return res.status(400).json({
+        success: false,
+        message: "New passwords do not match."
+      });
+    }
+
+    const { data: user, error: userErr } = await supabase
+      .from("users")
+      .select("password_hash, auth_provider")
+      .eq("id", req.user.id)
+      .single();
+
+    if (userErr || !user) {
+      return res.status(404).json({ success: false, message: "User not found." });
+    }
+
+    if (user.auth_provider !== "local" || !user.password_hash) {
+      return res.status(400).json({
+        success: false,
+        message: "Accounts signed up with Google do not use a password."
+      });
+    }
+
+    const isMatch = await bcrypt.compare(current_password, user.password_hash);
+    if (!isMatch) {
+      return res.status(400).json({
+        success: false,
+        message: "Current password is incorrect."
+      });
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    const newHash = await bcrypt.hash(new_password, salt);
+
+    const { error: updErr } = await supabase
+      .from("users")
+      .update({
+        password_hash: newHash,
+        updated_at: new Date().toISOString()
+      })
+      .eq("id", req.user.id);
+
+    if (updErr) throw updErr;
+
+    return res.json({
+      success: true,
+      message: "Password changed successfully."
+    });
+  } catch (err) {
+    console.error("changePassword error:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to change password."
+    });
+  }
+};
+
 module.exports = {
   register,
   login,
@@ -1009,5 +1135,7 @@ module.exports = {
   resetPassword,
   googleAuth,
   logout,
-  getMe
+  getMe,
+  updateProfile,
+  changePassword
 };

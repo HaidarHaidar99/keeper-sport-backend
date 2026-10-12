@@ -85,6 +85,10 @@ router.patch("/forms/:id/read", adminController.markContactFormReadAdmin);
 router.delete("/forms/:id", adminController.deleteContactFormAdmin);
 router.get("/contact-messages", adminController.getContactFormsAdmin);
 router.patch("/contact-messages/:id/read", adminController.markContactFormReadAdmin);
-router.delete("/contact-messages/:id", adminController.deleteContactFormAdmin);
+// Offers Management (Linked to products/categories)
+router.get("/offers", adminController.getOffersAdmin);
+router.post("/offers", adminController.createOfferAdmin);
+router.put("/offers/:id", adminController.updateOfferAdmin);
+router.delete("/offers/:id", adminController.deleteOfferAdmin);
 
 module.exports = router;

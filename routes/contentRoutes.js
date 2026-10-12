@@ -13,6 +13,7 @@ router.get("/homepage-story", contentController.getHomepageStory);
 router.get("/location", contentController.getLocationSettings);
 router.get("/social-media", contentController.getSocialSettings);
 router.get("/reviews", contentController.getPublicReviews);
+router.post("/reviews", optionalAuth, contentController.submitReview);
 router.post("/contact", optionalAuth, contentController.submitContactMessage);
 
 // User Counts Endpoint (Optional Auth: returns 0s for guests, real counts for authenticated users)

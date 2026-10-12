@@ -470,6 +470,123 @@ const getPublicReviews = async (req, res) => {
 };
 
 /**
+ * Submit Verified Customer Review
+ * POST /api/reviews
+ */
+const submitReview = async (req, res) => {
+  try {
+    const { rating, review_text, product_id, product_name } = req.body || {};
+
+    if (!req.user || !req.user.id) {
+      return res.status(401).json({
+        success: false,
+        message: "Please sign in to submit a verified customer review."
+      });
+    }
+
+    const numRating = parseFloat(rating);
+    if (isNaN(numRating) || numRating < 1 || numRating > 5) {
+      return res.status(400).json({
+        success: false,
+        message: "Rating must be between 1 and 5 stars."
+      });
+    }
+
+    if (!review_text || typeof review_text !== "string" || review_text.trim().length < 3) {
+      return res.status(400).json({
+        success: false,
+        message: "Please write a review comment (minimum 3 characters)."
+      });
+    }
+
+    // Determine product name snapshot
+    let finalSnapshot = product_name ? product_name.trim() : "Keeper Sports Store Experience";
+    if (product_id && !product_name) {
+      const { data: p } = await supabase
+        .from("products")
+        .select("name")
+        .eq("id", product_id)
+        .maybeSingle();
+      if (p?.name) finalSnapshot = p.name;
+    }
+
+    // Check if user already reviewed this product
+    if (product_id) {
+      const { data: existing } = await supabase
+        .from("product_reviews")
+        .select("id")
+        .eq("user_id", req.user.id)
+        .eq("product_id", product_id)
+        .maybeSingle();
+
+      if (existing) {
+        // Update their existing review
+        const { data: updated, error: updErr } = await supabase
+          .from("product_reviews")
+          .update({
+            rating: numRating,
+            review_text: review_text.trim(),
+            product_name_snapshot: finalSnapshot,
+            updated_at: new Date().toISOString()
+          })
+          .eq("id", existing.id)
+          .select("id, product_id, product_name_snapshot, rating, review_text, created_at")
+          .single();
+
+        if (updErr) throw updErr;
+
+        return res.json({
+          success: true,
+          message: "Your review has been updated successfully!",
+          review: {
+            ...updated,
+            product_name: updated.product_name_snapshot,
+            author: req.user.full_name || "Verified Customer"
+          }
+        });
+      }
+    }
+
+    const { data: inserted, error: insertErr } = await supabase
+      .from("product_reviews")
+      .insert({
+        user_id: req.user.id,
+        product_id: product_id || null,
+        product_name_snapshot: finalSnapshot,
+        rating: numRating,
+        review_text: review_text.trim(),
+        is_visible: true
+      })
+      .select("id, product_id, product_name_snapshot, rating, review_text, created_at")
+      .single();
+
+    if (insertErr) {
+      console.error("Error creating review:", insertErr);
+      return res.status(500).json({
+        success: false,
+        message: insertErr.message || "Failed to submit review."
+      });
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: "Thank you! Your verified review has been published.",
+      review: {
+        ...inserted,
+        product_name: inserted.product_name_snapshot,
+        author: req.user.full_name || "Verified Customer"
+      }
+    });
+  } catch (err) {
+    console.error("submitReview error:", err);
+    return res.status(500).json({
+      success: false,
+      message: "An unexpected error occurred while saving your review."
+    });
+  }
+};
+
+/**
  * Submit Contact Us Message
  * POST /api/contact
  */
@@ -718,6 +835,7 @@ module.exports = {
   getLocationSettings,
   getSocialSettings,
   getPublicReviews,
+  submitReview,
   submitContactMessage,
   getCustomerNotifications,
   markCustomerNotificationRead,
