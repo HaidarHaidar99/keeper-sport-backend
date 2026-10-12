@@ -76,8 +76,10 @@ router.delete("/reviews/:id", adminController.deleteReview);
 
 // Notifications
 router.get("/notifications", adminController.getNotificationsAdmin);
+router.post("/notifications/broadcast", adminController.sendBroadcastNotification);
 router.patch("/notifications/:id/read", adminController.markNotificationRead);
 router.post("/notifications/mark-all-read", adminController.markAllNotificationsRead);
+router.delete("/notifications/:id", adminController.deleteNotificationAdmin);
 
 // Contact Messages / Forms
 router.get("/forms", adminController.getContactFormsAdmin);

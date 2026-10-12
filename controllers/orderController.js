@@ -364,6 +364,36 @@ const createOrder = async (req, res) => {
       console.warn("Notification insert warning:", notifErr);
     }
 
+    // Notify customer if registered user
+    try {
+      let customerUserId = userId;
+      if (!customerUserId && customer_email) {
+        const { data: matchedUser } = await supabase
+          .from("users")
+          .select("id")
+          .eq("email", customer_email.trim().toLowerCase())
+          .maybeSingle();
+        if (matchedUser) {
+          customerUserId = matchedUser.id;
+        }
+      }
+
+      if (customerUserId) {
+        await supabase.from("notifications").insert({
+          recipient_user_id: customerUserId,
+          recipient_type: "user",
+          type: "order",
+          title: `Order #${newOrder.order_number} Placed 📋`,
+          message: `Your order #${newOrder.order_number} has been placed successfully and is pending confirmation.`,
+          reference_type: "order",
+          reference_id: newOrder.id,
+          is_read: false
+        });
+      }
+    } catch (custNotifErr) {
+      console.warn("Customer notification insert warning:", custNotifErr);
+    }
+
     return res.status(201).json({
       success: true,
       message: "Your order has been submitted successfully. For any inquiries, please contact us on WhatsApp.",
@@ -511,6 +541,33 @@ const cancelOrder = async (req, res) => {
       });
     } catch (hErr) {
       console.warn("Status history warning:", hErr);
+    }
+
+    // 5. Notifications
+    try {
+      await supabase.from("notifications").insert({
+        recipient_type: "admin",
+        type: "order",
+        title: `Order #${order.order_number} Cancelled`,
+        message: `Customer cancelled order #${order.order_number}.`,
+        reference_type: "order",
+        reference_id: id,
+        is_read: false
+      });
+      if (order.user_id) {
+        await supabase.from("notifications").insert({
+          recipient_user_id: order.user_id,
+          recipient_type: "user",
+          type: "order",
+          title: `Order #${order.order_number} Cancelled ❌`,
+          message: `Your order #${order.order_number} has been cancelled.`,
+          reference_type: "order",
+          reference_id: id,
+          is_read: false
+        });
+      }
+    } catch (notifErr) {
+      console.warn("Cancel notification error:", notifErr);
     }
 
     return res.json({

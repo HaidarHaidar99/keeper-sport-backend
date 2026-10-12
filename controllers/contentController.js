@@ -666,29 +666,56 @@ const getCustomerNotifications = async (req, res) => {
   try {
     const userId = req.user?.id || null;
 
+    // Fetch public broadcasts so every customer/guest sees system announcements
+    const { data: publicBroadcasts } = await supabase
+      .from("notifications")
+      .select("id, type, title, message, reference_type, reference_id, is_read, read_at, created_at")
+      .eq("reference_type", "broadcast")
+      .eq("recipient_type", "admin")
+      .order("created_at", { ascending: false })
+      .limit(10);
+
+    const cleanBroadcasts = (publicBroadcasts || []).map((b) => ({
+      ...b,
+      title: b.title.replace(/^System Broadcast:\s*/i, ""),
+      is_read: false
+    }));
+
     if (!userId) {
       return res.json({
         success: true,
-        notifications: [],
+        notifications: cleanBroadcasts,
         isGuest: true
       });
     }
 
-    const { data: notifications, error } = await supabase
+    const { data: userNotifications, error } = await supabase
       .from("notifications")
       .select("id, type, title, message, reference_type, reference_id, is_read, read_at, created_at")
       .eq("recipient_user_id", userId)
       .order("created_at", { ascending: false })
-      .limit(50);
+      .limit(60);
 
     if (error) {
       console.error("Error fetching customer notifications:", error);
       return res.status(500).json({ success: false, message: "Failed to fetch notifications." });
     }
 
+    // Combine user-specific notifications and public broadcasts, avoiding duplicates by title & message
+    const userNotifsList = userNotifications || [];
+    const seenTitles = new Set(userNotifsList.map((n) => `${n.title.trim()}_${n.message.trim()}`));
+
+    const additionalBroadcasts = cleanBroadcasts.filter(
+      (b) => !seenTitles.has(`${b.title.trim()}_${b.message.trim()}`)
+    );
+
+    const combined = [...userNotifsList, ...additionalBroadcasts].sort(
+      (a, b) => new Date(b.created_at) - new Date(a.created_at)
+    );
+
     return res.json({
       success: true,
-      notifications: notifications || [],
+      notifications: combined,
       isGuest: false
     });
   } catch (err) {
@@ -725,6 +752,37 @@ const markCustomerNotificationRead = async (req, res) => {
   } catch (err) {
     console.error("Unexpected error in markCustomerNotificationRead:", err);
     return res.status(500).json({ success: false, message: "Server error marking notification read." });
+  }
+};
+
+/**
+ * Delete Customer Notification
+ * DELETE /api/notifications/:id
+ */
+const deleteCustomerNotification = async (req, res) => {
+  try {
+    const userId = req.user?.id || null;
+    const { id } = req.params;
+
+    if (!userId) {
+      return res.status(401).json({ success: false, message: "Authentication required." });
+    }
+
+    const { error } = await supabase
+      .from("notifications")
+      .delete()
+      .eq("id", id)
+      .eq("recipient_user_id", userId);
+
+    if (error) {
+      console.error("Error deleting notification:", error);
+      return res.status(500).json({ success: false, message: "Failed to delete notification." });
+    }
+
+    return res.json({ success: true, message: "Notification deleted." });
+  } catch (err) {
+    console.error("Unexpected error in deleteCustomerNotification:", err);
+    return res.status(500).json({ success: false, message: "Server error deleting notification." });
   }
 };
 
@@ -840,6 +898,7 @@ module.exports = {
   getCustomerNotifications,
   markCustomerNotificationRead,
   markAllCustomerNotificationsRead,
+  deleteCustomerNotification,
   clearContentCache
 };
 

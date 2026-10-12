@@ -1315,7 +1315,7 @@ const updateOrderStatus = async (req, res) => {
     // Fetch existing order to verify current status
     const { data: order, error: findErr } = await supabase
       .from("orders")
-      .select("id, status, order_number")
+      .select("id, status, order_number, user_id, customer_email, customer_full_name")
       .eq("id", id)
       .maybeSingle();
 
@@ -1437,6 +1437,54 @@ const updateOrderStatus = async (req, res) => {
       });
     } catch (histErr) {
       console.warn("Status history insert warning:", histErr);
+    }
+
+    // Automatically notify customer of order status update
+    try {
+      let targetUserId = order.user_id;
+      if (!targetUserId && order.customer_email) {
+        const { data: matchedUser } = await supabase
+          .from("users")
+          .select("id")
+          .eq("email", order.customer_email.trim().toLowerCase())
+          .maybeSingle();
+        if (matchedUser) {
+          targetUserId = matchedUser.id;
+        }
+      }
+
+      if (targetUserId) {
+        const statusTitleMap = {
+          accepted: `Order #${order.order_number} Accepted! ⚽`,
+          preparing: `Order #${order.order_number} is Being Prepared 📦`,
+          on_delivery: `Order #${order.order_number} Out for Delivery 🚚`,
+          delivered: `Order #${order.order_number} Delivered! 🎉`,
+          rejected: `Order #${order.order_number} Rejected ⚠️`,
+          cancelled: `Order #${order.order_number} Cancelled ❌`
+        };
+
+        const statusMsgMap = {
+          accepted: `Great news! Your order #${order.order_number} has been confirmed and accepted by Keeper Sports.`,
+          preparing: `Your order #${order.order_number} is now being packed and prepared for shipping.`,
+          on_delivery: `Your order #${order.order_number} is on the way with our delivery courier!`,
+          delivered: `Your order #${order.order_number} has been safely delivered. Thank you for choosing Keeper Sports!`,
+          rejected: rejectReason ? `Your order #${order.order_number} was rejected: "${rejectReason}".` : `Your order #${order.order_number} could not be accepted.`,
+          cancelled: `Your order #${order.order_number} has been cancelled.`
+        };
+
+        await supabase.from("notifications").insert({
+          recipient_user_id: targetUserId,
+          recipient_type: "user",
+          type: "order",
+          title: statusTitleMap[status] || `Order #${order.order_number} Status Update`,
+          message: statusMsgMap[status] || `Your order status has changed to ${status}.`,
+          reference_type: "order",
+          reference_id: id,
+          is_read: false
+        });
+      }
+    } catch (notifErr) {
+      console.warn("Failed to create customer notification on status update:", notifErr);
     }
 
     return res.json({
@@ -1696,17 +1744,17 @@ const deleteReview = async (req, res) => {
 const getNotificationsAdmin = async (req, res) => {
   try {
     const [totalRes, unreadRes] = await Promise.all([
-      supabase.from("notifications").select("id", { count: "exact", head: true }).eq("recipient_type", "admin").neq("type", "system"),
-      supabase.from("notifications").select("id", { count: "exact", head: true }).eq("recipient_type", "admin").neq("type", "system").eq("is_read", false)
+      supabase.from("notifications").select("id", { count: "exact", head: true }).eq("recipient_type", "admin").neq("reference_type", "rate_limit"),
+      supabase.from("notifications").select("id", { count: "exact", head: true }).eq("recipient_type", "admin").neq("reference_type", "rate_limit").eq("is_read", false)
     ]);
 
     const { data, error } = await supabase
       .from("notifications")
       .select("*")
       .eq("recipient_type", "admin")
-      .neq("type", "system")
+      .neq("reference_type", "rate_limit")
       .order("created_at", { ascending: false })
-      .limit(50);
+      .limit(60);
 
     if (error) throw error;
 
@@ -1721,6 +1769,76 @@ const getNotificationsAdmin = async (req, res) => {
     });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * POST /api/admin/notifications/broadcast
+ * Broadcast a system notification to all users
+ */
+const sendBroadcastNotification = async (req, res) => {
+  try {
+    const { title, message, type = "system" } = req.body || {};
+
+    if (!title || !title.trim()) {
+      return res.status(400).json({ success: false, message: "Notification title is required." });
+    }
+    if (!message || !message.trim()) {
+      return res.status(400).json({ success: false, message: "Notification message is required." });
+    }
+
+    const cleanTitle = title.trim();
+    const cleanMessage = message.trim();
+
+    // 1. Fetch all registered users
+    const { data: users, error: userErr } = await supabase
+      .from("users")
+      .select("id");
+
+    if (userErr) {
+      console.error("Error fetching users for broadcast:", userErr);
+      return res.status(500).json({ success: false, message: "Failed to query recipients." });
+    }
+
+    const recipientRows = (users || []).map((u) => ({
+      recipient_user_id: u.id,
+      recipient_type: "user",
+      type: "system",
+      title: cleanTitle,
+      message: cleanMessage,
+      reference_type: "broadcast",
+      is_read: false
+    }));
+
+    if (recipientRows.length > 0) {
+      const { error: insertErr } = await supabase
+        .from("notifications")
+        .insert(recipientRows);
+
+      if (insertErr) {
+        console.error("Error inserting broadcast notifications:", insertErr);
+        return res.status(500).json({ success: false, message: "Failed to deliver notifications." });
+      }
+    }
+
+    // 2. Also log in admin notifications for record keeping & fallback
+    await supabase.from("notifications").insert({
+      recipient_type: "admin",
+      type: "system",
+      title: `System Broadcast: ${cleanTitle}`,
+      message: cleanMessage,
+      reference_type: "broadcast",
+      is_read: true
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: `System notification successfully delivered to ${recipientRows.length} user(s).`,
+      count: recipientRows.length
+    });
+  } catch (err) {
+    console.error("Unexpected error in sendBroadcastNotification:", err);
+    return res.status(500).json({ success: false, message: "Server error broadcasting notification." });
   }
 };
 
@@ -1755,6 +1873,28 @@ const markAllNotificationsRead = async (req, res) => {
 
     if (error) throw error;
     return res.json({ success: true, message: "All notifications marked as read." });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * DELETE /api/admin/notifications/:id
+ */
+const deleteNotificationAdmin = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!id) {
+      return res.status(400).json({ success: false, message: "Notification ID is required." });
+    }
+
+    const { error } = await supabase
+      .from("notifications")
+      .delete()
+      .eq("id", id);
+
+    if (error) throw error;
+    return res.json({ success: true, message: "Notification deleted." });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
   }
@@ -2244,8 +2384,10 @@ module.exports = {
   deleteReview,
   // Notifications
   getNotificationsAdmin,
+  sendBroadcastNotification,
   markNotificationRead,
   markAllNotificationsRead,
+  deleteNotificationAdmin,
   // Contact Forms
   getContactFormsAdmin,
   markContactFormReadAdmin,

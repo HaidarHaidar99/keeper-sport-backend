@@ -23,6 +23,7 @@ router.get("/user/counts", optionalAuth, contentController.getUserCounts);
 router.get("/notifications", optionalAuth, contentController.getCustomerNotifications);
 router.patch("/notifications/:id/read", optionalAuth, contentController.markCustomerNotificationRead);
 router.post("/notifications/mark-all-read", optionalAuth, contentController.markAllCustomerNotificationsRead);
+router.delete("/notifications/:id", optionalAuth, contentController.deleteCustomerNotification);
 
 module.exports = router;
 
