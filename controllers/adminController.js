@@ -1351,6 +1351,52 @@ const updateOrderStatus = async (req, res) => {
 
     if (status === "accepted") {
       updates.accepted_at = new Date().toISOString();
+
+      // Safely decrement inventory only when officially accepted by the admin
+      if (order.status !== "accepted") {
+        try {
+          const { data: orderItems } = await supabase
+            .from("order_items")
+            .select("product_id, variant_id, quantity")
+            .eq("order_id", id);
+
+          if (Array.isArray(orderItems)) {
+            for (const it of orderItems) {
+              const qty = Number(it.quantity) || 1;
+              if (it.variant_id) {
+                const { data: curVar } = await supabase
+                  .from("product_variants")
+                  .select("stock_quantity")
+                  .eq("id", it.variant_id)
+                  .maybeSingle();
+                if (curVar) {
+                  const newVarQty = Math.max(0, (curVar.stock_quantity || 0) - qty);
+                  await supabase
+                    .from("product_variants")
+                    .update({ stock_quantity: newVarQty })
+                    .eq("id", it.variant_id);
+                }
+              }
+              if (it.product_id) {
+                const { data: curProd } = await supabase
+                  .from("products")
+                  .select("stock_quantity")
+                  .eq("id", it.product_id)
+                  .maybeSingle();
+                if (curProd) {
+                  const newProdQty = Math.max(0, (curProd.stock_quantity || 0) - qty);
+                  await supabase
+                    .from("products")
+                    .update({ stock_quantity: newProdQty })
+                    .eq("id", it.product_id);
+                }
+              }
+            }
+          }
+        } catch (stockDecErr) {
+          console.warn("Stock decrement on accept warning:", stockDecErr);
+        }
+      }
     } else if (status === "preparing") {
       updates.preparing_at = new Date().toISOString();
     } else if (status === "on_delivery") {

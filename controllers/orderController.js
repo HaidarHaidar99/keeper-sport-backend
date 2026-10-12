@@ -319,33 +319,8 @@ const createOrder = async (req, res) => {
 
     await supabase.from("order_items").insert(orderItemsWithId);
 
-    // Safely decrement inventory for purchased items
-    try {
-      for (const it of preparedItems) {
-        if (it.variant_id) {
-          const { data: curVar } = await supabase
-            .from("product_variants")
-            .select("stock_quantity")
-            .eq("id", it.variant_id)
-            .maybeSingle();
-          if (curVar) {
-            const newVarQty = Math.max(0, curVar.stock_quantity - it.quantity);
-            await supabase.from("product_variants").update({ stock_quantity: newVarQty }).eq("id", it.variant_id);
-          }
-        }
-        const { data: curProd } = await supabase
-          .from("products")
-          .select("stock_quantity")
-          .eq("id", it.product_id)
-          .maybeSingle();
-        if (curProd) {
-          const newProdQty = Math.max(0, curProd.stock_quantity - it.quantity);
-          await supabase.from("products").update({ stock_quantity: newProdQty }).eq("id", it.product_id);
-        }
-      }
-    } catch (stockDecErr) {
-      console.warn("Stock decrement warning:", stockDecErr);
-    }
+    // Note: Inventory is preserved upon initial order placement (status: pending)
+    // and is decremented only when the order is officially accepted by the admin.
 
     // Initial status history entry
     await supabase.from("order_status_history").insert({
