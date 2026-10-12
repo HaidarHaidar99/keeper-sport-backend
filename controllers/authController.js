@@ -1002,6 +1002,13 @@ const getMe = async (req, res) => {
  */
 const updateProfile = async (req, res) => {
   try {
+    if (req.user?.auth_provider === "google") {
+      return res.status(400).json({
+        success: false,
+        message: "Accounts registered via Google cannot change their name."
+      });
+    }
+
     const { full_name } = req.body || {};
     if (!full_name || typeof full_name !== "string" || full_name.trim().length < 2) {
       return res.status(400).json({
