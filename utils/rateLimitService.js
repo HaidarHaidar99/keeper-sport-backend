@@ -12,11 +12,33 @@ const getClientIp = (req) => {
   return req.headers["x-real-ip"] || req.socket?.remoteAddress || null;
 };
 
+// In-process lock to prevent simultaneous concurrent requests within the same process
+const activeLocks = new Map();
+
+const acquireLock = (key, ttlMs = 15000) => {
+  const now = Date.now();
+  const existing = activeLocks.get(key);
+  if (existing && now - existing < ttlMs) {
+    return false;
+  }
+  activeLocks.set(key, now);
+  return true;
+};
+
+const releaseLock = (key) => {
+  activeLocks.delete(key);
+};
+
+// Periodically clean stale in-memory locks
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, ts] of activeLocks.entries()) {
+    if (now - ts > 30000) activeLocks.delete(k);
+  }
+}, 60000).unref?.();
+
 let hasAuthEventsTable = null;
 
-/**
- * Check if auth_email_events table is accessible in Supabase
- */
 /**
  * Check if auth_email_events table is accessible in Supabase
  */
@@ -40,34 +62,95 @@ const recordEmailEvent = async ({ email, eventType, ipAddress }) => {
 
   if (isTableAvailable) {
     try {
-      const { error } = await supabase.from("auth_email_events").insert({
-        email: normalizedEmail,
-        event_type: eventType,
-        ip_address: ipAddress
-      });
-      if (!error) return true;
+      const { data, error } = await supabase
+        .from("auth_email_events")
+        .insert({
+          email: normalizedEmail,
+          event_type: eventType,
+          ip_address: ipAddress
+        })
+        .select("id")
+        .single();
+      if (!error && data) return data.id;
     } catch (err) {
       console.warn("[RateLimit] Error inserting into auth_email_events:", err.message);
     }
   }
 
-  // Fallback: Persist in notifications table with valid system enums (isolated from admin UI)
+  // Fallback: Persist in notifications table with valid system enums (isolated from admin UI via reference_type: rate_limit)
   try {
-    const { error: fallbackErr } = await supabase.from("notifications").insert({
-      recipient_type: "admin",
-      type: "system",
-      title: normalizedEmail,
-      message: ipAddress || "unknown_ip",
-      reference_type: `auth_email_event:${eventType}`,
-      is_read: true
-    });
-    if (!fallbackErr) return true;
-    console.error("[RateLimit] Error in persistent event logging fallback:", fallbackErr.message);
-    return false;
+    const { data: fallbackData, error: fallbackErr } = await supabase
+      .from("notifications")
+      .insert({
+        recipient_type: "admin",
+        type: "system",
+        title: normalizedEmail,
+        message: `${eventType}|${ipAddress || "unknown_ip"}`,
+        reference_type: "rate_limit",
+        is_read: true
+      })
+      .select("id")
+      .single();
+
+    if (!fallbackErr && fallbackData) return fallbackData.id;
+    console.error("[RateLimit] Error in persistent event logging fallback:", fallbackErr?.message);
+    return null;
   } catch (fallbackErr) {
     console.error("[RateLimit] Exception in persistent event logging fallback:", fallbackErr.message);
-    return false;
+    return null;
   }
+};
+
+/**
+ * Remove a pending reservation record if email delivery failed
+ * (Ensures resend allowance is NOT consumed on failure)
+ */
+const removePendingReservation = async (reservationId) => {
+  if (!reservationId) return;
+  const isTableAvailable = await checkTableAvailability();
+
+  if (isTableAvailable) {
+    try {
+      await supabase.from("auth_email_events").delete().eq("id", reservationId);
+      return;
+    } catch {}
+  }
+
+  try {
+    await supabase.from("notifications").delete().eq("id", reservationId);
+  } catch {}
+};
+
+/**
+ * Finalize a pending reservation after email delivery succeeded
+ */
+const finalizeReservation = async (reservationId, finalEventType) => {
+  if (!reservationId) return;
+  const isTableAvailable = await checkTableAvailability();
+
+  if (isTableAvailable) {
+    try {
+      await supabase
+        .from("auth_email_events")
+        .update({ event_type: finalEventType })
+        .eq("id", reservationId);
+      return;
+    } catch {}
+  }
+
+  try {
+    const { data } = await supabase
+      .from("notifications")
+      .select("message")
+      .eq("id", reservationId)
+      .maybeSingle();
+
+    const ipPart = (data?.message || "").includes("|") ? data.message.split("|")[1] : "unknown_ip";
+    await supabase
+      .from("notifications")
+      .update({ message: `${finalEventType}|${ipPart}` })
+      .eq("id", reservationId);
+  } catch {}
 };
 
 /**
@@ -82,7 +165,7 @@ const queryRecentEvents = async ({ email, eventType, sinceIso }) => {
     try {
       let query = supabase
         .from("auth_email_events")
-        .select("id, created_at, ip_address")
+        .select("id, created_at, ip_address, event_type")
         .eq("email", normalizedEmail);
 
       if (eventTypes.length === 1) {
@@ -103,28 +186,32 @@ const queryRecentEvents = async ({ email, eventType, sinceIso }) => {
     }
   }
 
-  // Fallback query on notifications table with valid system enums
+  // Fallback query on notifications table
   try {
-    const refTypes = eventTypes.map((t) => `auth_email_event:${t}`);
-    let fallbackQuery = supabase
+    const legacyRefTypes = eventTypes.map((t) => `auth_email_event:${t}`);
+
+    // Query both rate_limit reference_type and legacy auth_email_event:* rows
+    const { data, error } = await supabase
       .from("notifications")
-      .select("id, created_at, message")
+      .select("id, created_at, message, reference_type")
       .eq("recipient_type", "admin")
       .eq("type", "system")
-      .eq("title", normalizedEmail);
-
-    if (refTypes.length === 1) {
-      fallbackQuery = fallbackQuery.eq("reference_type", refTypes[0]);
-    } else {
-      fallbackQuery = fallbackQuery.in("reference_type", refTypes);
-    }
-
-    const { data, error } = await fallbackQuery
+      .eq("title", normalizedEmail)
       .gte("created_at", sinceIso)
       .order("created_at", { ascending: false });
 
     if (!error && Array.isArray(data)) {
-      return data;
+      const filtered = data.filter((row) => {
+        // Matches legacy reference_type
+        if (legacyRefTypes.includes(row.reference_type)) return true;
+        // Matches modern rate_limit reference_type with message encoded as eventType|ip
+        if (row.reference_type === "rate_limit") {
+          const typeInMsg = (row.message || "").split("|")[0];
+          return eventTypes.includes(typeInMsg);
+        }
+        return false;
+      });
+      return filtered;
     }
   } catch (err) {
     console.error("[RateLimit] Error querying notifications fallback:", err.message);
@@ -155,20 +242,44 @@ const queryIpRequestCount = async ({ ipAddress, sinceIso }) => {
   }
 
   try {
-    const { count, error } = await supabase
+    const { data, error } = await supabase
       .from("notifications")
-      .select("id", { count: "exact", head: true })
+      .select("id, message, reference_type")
       .eq("recipient_type", "admin")
       .eq("type", "system")
-      .eq("message", ipAddress)
       .gte("created_at", sinceIso);
 
-    if (!error && typeof count === "number") {
+    if (!error && Array.isArray(data)) {
+      const count = data.filter((row) => {
+        if (row.reference_type === "rate_limit" && (row.message || "").includes(`|${ipAddress}`)) {
+          return true;
+        }
+        if (row.message === ipAddress) return true;
+        return false;
+      }).length;
       return count;
     }
   } catch {}
 
   return 0;
+};
+
+/**
+ * Separate IP-based abuse protection for authentication endpoints
+ * Max 30 requests per 15-minute rolling window per IP
+ */
+const checkIpAbuseLimit = async (ipAddress) => {
+  if (!ipAddress) return { allowed: true };
+  const fifteenMinsAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+  const count = await queryIpRequestCount({ ipAddress, sinceIso: fifteenMinsAgo });
+  if (count >= 30) {
+    return {
+      allowed: false,
+      reason: "ip_abuse",
+      message: "Too many requests from this network. Please try again later."
+    };
+  }
+  return { allowed: true, count };
 };
 
 /**
@@ -181,24 +292,33 @@ const checkVerificationResendLimit = async (email, ipAddress) => {
   const now = Date.now();
   const oneHourAgo = new Date(now - 60 * 60 * 1000).toISOString();
   const sixtySecsAgo = new Date(now - 60 * 1000).toISOString();
-  const fifteenMinsAgo = new Date(now - 15 * 60 * 1000).toISOString();
 
-  // 1. IP Abuse Protection (Max 40 email requests per 15 minutes per IP)
-  if (ipAddress) {
-    const ipCount = await queryIpRequestCount({ ipAddress, sinceIso: fifteenMinsAgo });
-    if (ipCount >= 40) {
-      return {
-        allowed: false,
-        reason: "ip_abuse",
-        message: "Too many requests from this network. Please try again later."
-      };
-    }
+  // 1. IP Abuse Protection
+  const ipCheck = await checkIpAbuseLimit(ipAddress);
+  if (!ipCheck.allowed) {
+    return ipCheck;
   }
 
-  // 2. Cooldown Check across any verification email issuance (initial or resend)
+  // 2. Hourly Limit Check: Max 3 additional resends per rolling 60-minute window
+  const resendEvents = await queryRecentEvents({
+    email: normalizedEmail,
+    eventType: ["verification_resend", "verification_resend:pending"],
+    sinceIso: oneHourAgo
+  });
+
+  if (resendEvents.length >= 3) {
+    return {
+      allowed: false,
+      reason: "hourly_limit",
+      totalInWindow: resendEvents.length,
+      message: "You have reached the maximum of 3 verification email resends for this hour. Please check your inbox or try again in an hour."
+    };
+  }
+
+  // 3. Cooldown Check across any verification email issuance (initial, resend, or in-flight pending)
   const recentIssuances = await queryRecentEvents({
     email: normalizedEmail,
-    eventType: ["verification_initial", "verification_resend"],
+    eventType: ["verification_initial", "verification_resend", "verification_resend:pending"],
     sinceIso: sixtySecsAgo
   });
 
@@ -215,22 +335,6 @@ const checkVerificationResendLimit = async (email, ipAddress) => {
         message: `Please wait ${remainingSeconds} seconds before requesting another verification email.`
       };
     }
-  }
-
-  // 3. Hourly Limit Check: Max 3 additional resends per rolling 60-minute window
-  const resendEvents = await queryRecentEvents({
-    email: normalizedEmail,
-    eventType: "verification_resend",
-    sinceIso: oneHourAgo
-  });
-
-  if (resendEvents.length >= 3) {
-    return {
-      allowed: false,
-      reason: "hourly_limit",
-      totalInWindow: resendEvents.length,
-      message: "You have reached the maximum of 3 verification email resends for this hour. Please check your inbox or try again in an hour."
-    };
   }
 
   return {
@@ -250,49 +354,42 @@ const checkPasswordResetLimit = async (email, ipAddress) => {
   const now = Date.now();
   const oneHourAgo = new Date(now - 60 * 60 * 1000).toISOString();
   const sixtySecsAgo = new Date(now - 60 * 1000).toISOString();
-  const fifteenMinsAgo = new Date(now - 15 * 60 * 1000).toISOString();
 
   // 1. IP Abuse Protection
-  if (ipAddress) {
-    const ipCount = await queryIpRequestCount({ ipAddress, sinceIso: fifteenMinsAgo });
-    if (ipCount >= 40) {
-      return {
-        allowed: false,
-        reason: "ip_abuse",
-        message: "Too many requests from this network. Please try again later."
-      };
-    }
+  const ipCheck = await checkIpAbuseLimit(ipAddress);
+  if (!ipCheck.allowed) {
+    return ipCheck;
   }
 
-  // 2. Query events in the rolling 60-minute window
+  // 2. Query events in the rolling 60-minute window (including pending)
   const recentEvents = await queryRecentEvents({
     email: normalizedEmail,
-    eventType: "password_reset",
+    eventType: ["password_reset", "password_reset:pending"],
     sinceIso: oneHourAgo
   });
 
-  // 3. Cooldown Check (Minimum 60 seconds)
-  const lastEvent = recentEvents[0];
-  if (lastEvent) {
-    const lastEventTime = new Date(lastEvent.created_at).getTime();
-    const elapsedMs = now - lastEventTime;
-    if (elapsedMs < 60 * 1000) {
-      const remainingSeconds = Math.ceil((60 * 1000 - elapsedMs) / 1000);
-      return {
-        allowed: false,
-        reason: "cooldown",
-        remainingSeconds
-      };
-    }
-  }
-
-  // 4. Hourly Limit Check (1 initial + 3 additional resends = max 4 in 60 minutes)
+  // 3. Hourly Limit Check (1 initial + 3 additional resends = max 4 in 60 minutes)
   if (recentEvents.length >= 4) {
     return {
       allowed: false,
       reason: "hourly_limit",
       totalInWindow: recentEvents.length
     };
+  }
+
+  // 4. Cooldown Check (Minimum 60 seconds)
+  const lastEvent = recentEvents[0];
+  if (lastEvent) {
+    const lastEventTime = new Date(lastEvent.created_at).getTime();
+    const elapsedMs = now - lastEventTime;
+    if (elapsedMs < 60 * 1000) {
+      const remainingSeconds = Math.max(1, Math.ceil((60 * 1000 - elapsedMs) / 1000));
+      return {
+        allowed: false,
+        reason: "cooldown",
+        remainingSeconds
+      };
+    }
   }
 
   return {
@@ -303,7 +400,12 @@ const checkPasswordResetLimit = async (email, ipAddress) => {
 
 module.exports = {
   getClientIp,
+  acquireLock,
+  releaseLock,
+  checkIpAbuseLimit,
   checkVerificationResendLimit,
+  checkPasswordResetLimit,
   recordEmailEvent,
-  checkPasswordResetLimit
+  removePendingReservation,
+  finalizeReservation
 };

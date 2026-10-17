@@ -7,9 +7,14 @@ const { COOKIE_NAME, getCookieOptions, sanitizeUser } = require("../middleware/a
 const { sendVerificationEmail, sendPasswordResetEmail } = require("../utils/emailService");
 const {
   getClientIp,
+  acquireLock,
+  releaseLock,
+  checkIpAbuseLimit,
   checkVerificationResendLimit,
+  checkPasswordResetLimit,
   recordEmailEvent,
-  checkPasswordResetLimit
+  removePendingReservation,
+  finalizeReservation
 } = require("../utils/rateLimitService");
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -340,6 +345,8 @@ const verifyEmail = async (req, res) => {
  * POST /api/auth/resend-verification
  */
 const resendVerification = async (req, res) => {
+  let lockKey = null;
+  let reservationId = null;
   try {
     const { email } = req.body;
 
@@ -353,6 +360,16 @@ const resendVerification = async (req, res) => {
     const normalizedEmail = email.trim().toLowerCase();
     const clientIp = getClientIp(req);
 
+    // Prevent simultaneous requests for same email in-flight
+    lockKey = `resend:${normalizedEmail}`;
+    if (!acquireLock(lockKey)) {
+      return res.status(429).json({
+        success: false,
+        reason: "concurrency",
+        message: "A verification email request is already being processed. Please wait a moment."
+      });
+    }
+
     const { data: user, error } = await supabase
       .from("users")
       .select("id, email, full_name, is_verified, auth_provider, verification_token_expires_at")
@@ -361,6 +378,7 @@ const resendVerification = async (req, res) => {
 
     if (error) {
       console.error("Database error finding user for resend verification:", error);
+      releaseLock(lockKey);
       return res.status(500).json({
         success: false,
         message: "Database check failed."
@@ -369,6 +387,7 @@ const resendVerification = async (req, res) => {
 
     // Generic safe response if user not found or google provider
     if (!user || user.auth_provider !== "local") {
+      releaseLock(lockKey);
       return res.json({
         success: true,
         message: "If an unverified account exists for this email, a verification link has been sent."
@@ -376,6 +395,7 @@ const resendVerification = async (req, res) => {
     }
 
     if (user.is_verified) {
+      releaseLock(lockKey);
       return res.json({
         success: true,
         already_verified: true,
@@ -386,6 +406,7 @@ const resendVerification = async (req, res) => {
     // Rate limiting policy: 60s cooldown, max 3 additional resends per rolling 60-minute window
     const rateCheck = await checkVerificationResendLimit(user.email, clientIp);
     if (!rateCheck.allowed) {
+      releaseLock(lockKey);
       return res.status(429).json({
         success: false,
         reason: rateCheck.reason,
@@ -393,6 +414,13 @@ const resendVerification = async (req, res) => {
         message: rateCheck.message
       });
     }
+
+    // Record persistent pending reservation to prevent multi-instance race condition
+    reservationId = await recordEmailEvent({
+      email: user.email,
+      eventType: "verification_resend:pending",
+      ipAddress: clientIp
+    });
 
     // Generate replacement token (strictly 5 minutes)
     const rawToken = crypto.randomBytes(32).toString("hex");
@@ -408,6 +436,8 @@ const resendVerification = async (req, res) => {
 
     if (!emailResult.success) {
       console.error("Failed to deliver verification resend via Resend:", emailResult.error);
+      if (reservationId) await removePendingReservation(reservationId);
+      releaseLock(lockKey);
       return res.status(500).json({
         success: false,
         message: "Could not send verification email at this time. Please try again later."
@@ -426,24 +456,34 @@ const resendVerification = async (req, res) => {
 
     if (updateError) {
       console.error("Database error updating verification token:", updateError);
+      if (reservationId) await removePendingReservation(reservationId);
+      releaseLock(lockKey);
       return res.status(500).json({
         success: false,
         message: "Failed to update verification link state. Please try again."
       });
     }
 
-    // Record rate limit event
-    await recordEmailEvent({
-      email: user.email,
-      eventType: "verification_resend",
-      ipAddress: clientIp
-    });
+    // Finalize rate limit event
+    if (reservationId) {
+      await finalizeReservation(reservationId, "verification_resend");
+    } else {
+      await recordEmailEvent({
+        email: user.email,
+        eventType: "verification_resend",
+        ipAddress: clientIp
+      });
+    }
+
+    releaseLock(lockKey);
 
     return res.json({
       success: true,
       message: "A new verification email has been sent. Please check your inbox."
     });
   } catch (err) {
+    if (reservationId) await removePendingReservation(reservationId);
+    if (lockKey) releaseLock(lockKey);
     console.error("Resend verification error:", err);
     return res.status(500).json({
       success: false,
@@ -464,8 +504,21 @@ const forgotPassword = async (req, res) => {
     message: "If an account exists with this email address, we'll send you a password reset link. Please check your inbox and spam folder."
   };
 
+  let lockKey = null;
+  let reservationId = null;
+
   try {
     const { email } = req.body;
+    const clientIp = getClientIp(req);
+
+    // 1. Separate IP-based abuse protection (protects the endpoint globally before any account logic)
+    const ipCheck = await checkIpAbuseLimit(clientIp);
+    if (!ipCheck.allowed) {
+      return res.status(429).json({
+        success: false,
+        message: ipCheck.message || "Too many requests from this network. Please try again later."
+      });
+    }
 
     if (!email || typeof email !== "string" || !EMAIL_REGEX.test(email.trim())) {
       return res.status(400).json({
@@ -475,7 +528,18 @@ const forgotPassword = async (req, res) => {
     }
 
     const normalizedEmail = email.trim().toLowerCase();
-    const clientIp = getClientIp(req);
+
+    // Concurrency guard: if an issuance for this email is currently running, do not duplicate
+    lockKey = `forgot:${normalizedEmail}`;
+    if (!acquireLock(lockKey)) {
+      // Jitter and return generic success without exposing state
+      const elapsed = Date.now() - startTime;
+      const targetDuration = 220 + Math.floor(Math.random() * 80);
+      if (elapsed < targetDuration) {
+        await new Promise((resolve) => setTimeout(resolve, targetDuration - elapsed));
+      }
+      return res.json(genericSuccess);
+    }
 
     const { data: user, error } = await supabase
       .from("users")
@@ -488,6 +552,13 @@ const forgotPassword = async (req, res) => {
       const rateCheck = await checkPasswordResetLimit(user.email, clientIp);
 
       if (rateCheck.allowed) {
+        // Record persistent pending reservation
+        reservationId = await recordEmailEvent({
+          email: user.email,
+          eventType: "password_reset:pending",
+          ipAddress: clientIp
+        });
+
         // Generate replacement reset token (strictly 5 minutes)
         const rawToken = crypto.randomBytes(32).toString("hex");
         const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
@@ -501,7 +572,7 @@ const forgotPassword = async (req, res) => {
         });
 
         if (emailResult.success) {
-          // Atomically update user record with new token hash and expiration
+          // Atomically update user record with new token hash and expiration (replaces previous link)
           await supabase
             .from("users")
             .update({
@@ -511,15 +582,28 @@ const forgotPassword = async (req, res) => {
             })
             .eq("id", user.id);
 
-          // Persist email issuance event in database
-          await recordEmailEvent({
-            email: user.email,
-            eventType: "password_reset",
-            ipAddress: clientIp
-          });
+          // Finalize rate limit event
+          if (reservationId) {
+            await finalizeReservation(reservationId, "password_reset");
+            reservationId = null;
+          } else {
+            await recordEmailEvent({
+              email: user.email,
+              eventType: "password_reset",
+              ipAddress: clientIp
+            });
+          }
+        } else {
+          // Delivery failed: remove pending reservation so allowance is not consumed
+          if (reservationId) {
+            await removePendingReservation(reservationId);
+            reservationId = null;
+          }
         }
       }
     }
+
+    if (lockKey) releaseLock(lockKey);
 
     // Timing jitter protection: normalize response latency to 220-300ms to defeat side-channel timing analysis
     const elapsed = Date.now() - startTime;
@@ -530,8 +614,9 @@ const forgotPassword = async (req, res) => {
 
     return res.json(genericSuccess);
   } catch (err) {
+    if (reservationId) await removePendingReservation(reservationId);
+    if (lockKey) releaseLock(lockKey);
     console.error("Forgot password error:", err);
-    // Even on internal errors, apply jitter and return generic response to prevent information leakage
     const elapsed = Date.now() - startTime;
     const targetDuration = 220 + Math.floor(Math.random() * 80);
     if (elapsed < targetDuration) {

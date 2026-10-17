@@ -1758,11 +1758,15 @@ const getNotificationsAdmin = async (req, res) => {
 
     if (error) throw error;
 
+    const cleanNotifications = (data || []).filter(
+      (n) => !n.reference_type?.startsWith("auth_email_event") && !n.reference_type?.startsWith("rate_limit")
+    );
+
     return res.json({
       success: true,
-      notifications: data || [],
+      notifications: cleanNotifications,
       stats: {
-        total: totalRes.count || 0,
+        total: Math.max(0, (totalRes.count || 0) - (data ? data.length - cleanNotifications.length : 0)),
         unread: unreadRes.count || 0,
         read: (totalRes.count || 0) - (unreadRes.count || 0)
       }
