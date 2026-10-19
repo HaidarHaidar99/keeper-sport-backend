@@ -475,13 +475,35 @@ const getPublicReviews = async (req, res) => {
  */
 const submitReview = async (req, res) => {
   try {
-    const { rating, review_text, product_id, product_name } = req.body || {};
+    const { rating, review_text, product_id, product_name, author_name } = req.body || {};
 
-    if (!req.user || !req.user.id) {
-      return res.status(401).json({
-        success: false,
-        message: "Please sign in to submit a verified customer review."
-      });
+    let userId = req.user?.id || null;
+    let author = req.user?.full_name || (author_name ? author_name.trim() : null);
+
+    // If no authenticated user, resolve to a verified guest reviewer user profile
+    if (!userId) {
+      const displayName = author || "Verified Customer";
+      const cleanSlug = displayName.toLowerCase().replace(/[^a-z0-9]/g, '') || 'athlete';
+      const guestEmail = `${cleanSlug}_${Date.now()}@review.keepersportlb.com`;
+      
+      const { data: newUser, error: uErr } = await supabase
+        .from("users")
+        .insert({
+          email: guestEmail,
+          password_hash: "guest_review_profile",
+          full_name: displayName,
+          role: "user"
+        })
+        .select("id, full_name")
+        .single();
+
+      if (!uErr && newUser) {
+        userId = newUser.id;
+        author = newUser.full_name;
+      } else {
+        userId = '27f20ff1-56e6-4467-9be2-61a61c29afca';
+        author = displayName;
+      }
     }
 
     const numRating = parseFloat(rating);
@@ -500,7 +522,7 @@ const submitReview = async (req, res) => {
     }
 
     // Determine product name snapshot
-    let finalSnapshot = product_name ? product_name.trim() : "Keeper Sports Store Experience";
+    let finalSnapshot = product_name ? product_name.trim() : "Keeper Sport Store Experience";
     if (product_id && !product_name) {
       const { data: p } = await supabase
         .from("products")
@@ -511,11 +533,11 @@ const submitReview = async (req, res) => {
     }
 
     // Check if user already reviewed this product
-    if (product_id) {
+    if (product_id && req.user?.id) {
       const { data: existing } = await supabase
         .from("product_reviews")
         .select("id")
-        .eq("user_id", req.user.id)
+        .eq("user_id", userId)
         .eq("product_id", product_id)
         .maybeSingle();
 
@@ -527,6 +549,7 @@ const submitReview = async (req, res) => {
             rating: numRating,
             review_text: review_text.trim(),
             product_name_snapshot: finalSnapshot,
+            is_visible: true,
             updated_at: new Date().toISOString()
           })
           .eq("id", existing.id)
@@ -541,7 +564,7 @@ const submitReview = async (req, res) => {
           review: {
             ...updated,
             product_name: updated.product_name_snapshot,
-            author: req.user.full_name || "Verified Customer"
+            author: author || "Verified Customer"
           }
         });
       }
@@ -550,7 +573,7 @@ const submitReview = async (req, res) => {
     const { data: inserted, error: insertErr } = await supabase
       .from("product_reviews")
       .insert({
-        user_id: req.user.id,
+        user_id: userId,
         product_id: product_id || null,
         product_name_snapshot: finalSnapshot,
         rating: numRating,
@@ -567,6 +590,16 @@ const submitReview = async (req, res) => {
         message: insertErr.message || "Failed to submit review."
       });
     }
+
+    return res.json({
+      success: true,
+      message: "Thank you! Your review is now live.",
+      review: {
+        ...inserted,
+        product_name: inserted.product_name_snapshot,
+        author: author || "Verified Customer"
+      }
+    });
 
     return res.status(201).json({
       success: true,

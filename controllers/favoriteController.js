@@ -192,7 +192,9 @@ const clearFavorites = async (req, res) => {
     }
 
     let delQuery = supabase.from("favorites").delete();
-    if (userId) {
+    if (userId && guestIdentifier) {
+      delQuery = delQuery.or(`user_id.eq.${userId},guest_identifier.eq.${guestIdentifier}`);
+    } else if (userId) {
       delQuery = delQuery.eq("user_id", userId);
     } else {
       delQuery = delQuery.eq("guest_identifier", guestIdentifier);
