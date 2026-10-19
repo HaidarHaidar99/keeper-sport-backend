@@ -12,11 +12,11 @@ const getResendClient = () => {
 };
 
 const getSenderEmail = () => {
-  return process.env.RESEND_FROM_EMAIL || "Keeper Sports <no-reply@keepersportlb.com>";
+  return process.env.RESEND_FROM_EMAIL || "Keeper Sport LB <no-reply@keepersportlb.com>";
 };
 
 /**
- * Base email layout for Keeper Sports
+ * Base email layout for Keeper Sport LB
  * Uses official Keeper Red (#E10600), dark sports aesthetics, rectangular CTA button
  */
 const renderEmailTemplate = ({ title, subtitle, contentHtml, buttonText, buttonUrl }) => {
@@ -42,7 +42,7 @@ const renderEmailTemplate = ({ title, subtitle, contentHtml, buttonText, buttonU
           <tr>
             <td style="padding: 36px 36px 20px 36px; text-align: left;">
               <div style="font-size: 13px; font-weight: 800; letter-spacing: 0.15em; color: #E10600; text-transform: uppercase; margin-bottom: 8px;">
-                KEEPER SPORTS
+                KEEPER SPORT LB
               </div>
               <h1 style="margin: 0; font-size: 24px; font-weight: 700; color: #ffffff; line-height: 1.25;">
                 ${title}
@@ -84,8 +84,8 @@ const renderEmailTemplate = ({ title, subtitle, contentHtml, buttonText, buttonU
           <!-- Footer -->
           <tr>
             <td style="padding: 24px 36px; background-color: #0d0e12; border-top: 1px solid #1c1f27; font-size: 12px; color: #535868; text-align: left; line-height: 1.5;">
-              This is an automated authentication email from Keeper Sports. If you did not make this request, you can safely ignore this message.<br><br>
-              © ${new Date().getFullYear()} Keeper Sports (keepersportlb.com). All rights reserved.
+              This is an automated authentication email from Keeper Sport LB. If you did not make this request, you can safely ignore this message.<br><br>
+              © ${new Date().getFullYear()} Keeper Sport LB (keepersportlb.com). All rights reserved.
             </td>
           </tr>
         </table>
@@ -116,30 +116,30 @@ const sendVerificationEmail = async ({ email, fullName, rawToken }) => {
   }
 
   const html = renderEmailTemplate({
-    title: "Verify your Keeper Sports email",
-    subtitle: `Welcome to Keeper Sports, ${fullName || 'Athlete'}.`,
+    title: "Verify your Keeper Sport LB email",
+    subtitle: `Welcome to Keeper Sport LB, ${fullName || 'Athlete'}.`,
     contentHtml: `
       <p style="margin: 0 0 16px 0;">
-        Thank you for creating an account with Keeper Sports. To activate your account and start shopping authentic kits, please verify your email address.
+        Thank you for creating an account with Keeper Sport LB. To activate your account and start shopping authentic kits, please verify your email address.
       </p>
       <div style="background-color: #17181f; border-left: 3px solid #E10600; padding: 12px 16px; margin: 0 0 16px 0; font-size: 13px; color: #e5e7eb;">
         <strong>Notice:</strong> For your security, this verification link will expire in exactly <strong>5 minutes</strong>.
       </div>
       <p style="margin: 0; color: #9ca3af; font-size: 13px;">
-        If you did not register for an account at Keeper Sports, please ignore this email.
+        If you did not register for an account at Keeper Sport LB, please ignore this email.
       </p>
     `,
     buttonText: "Verify Email",
     buttonUrl: verifyUrl
   });
 
-  const text = `Welcome to Keeper Sports, ${fullName || 'Athlete'}!\n\nPlease verify your email by clicking the link below:\n${verifyUrl}\n\nFor your security, this verification link expires in exactly 5 minutes.\n\nIf you did not create an account, please ignore this email.`;
+  const text = `Welcome to Keeper Sport LB, ${fullName || 'Athlete'}!\n\nPlease verify your email by clicking the link below:\n${verifyUrl}\n\nFor your security, this verification link expires in exactly 5 minutes.\n\nIf you did not create an account, please ignore this email.`;
 
   try {
     const { data, error } = await resend.emails.send({
       from: getSenderEmail(),
       to: email,
-      subject: "Verify your Keeper Sports email",
+      subject: "Verify your Keeper Sport LB email",
       html,
       text
     });
@@ -183,11 +183,11 @@ const sendPasswordResetEmail = async ({ email, fullName, rawToken }) => {
   }
 
   const html = renderEmailTemplate({
-    title: "Reset your Keeper Sports password",
+    title: "Reset your Keeper Sport LB password",
     subtitle: `Hello ${fullName || 'Athlete'},`,
     contentHtml: `
       <p style="margin: 0 0 16px 0;">
-        We received a request to reset the password for your Keeper Sports account. Click the button below to choose a new password.
+        We received a request to reset the password for your Keeper Sport LB account. Click the button below to choose a new password.
       </p>
       <div style="background-color: #17181f; border-left: 3px solid #E10600; padding: 12px 16px; margin: 0 0 16px 0; font-size: 13px; color: #e5e7eb;">
         <strong>Notice:</strong> For your security, this password reset link will expire in exactly <strong>5 minutes</strong> and can only be used once.
@@ -200,13 +200,13 @@ const sendPasswordResetEmail = async ({ email, fullName, rawToken }) => {
     buttonUrl: resetUrl
   });
 
-  const text = `Hello ${fullName || 'Athlete'},\n\nWe received a request to reset your Keeper Sports password.\nClick the link below to choose a new password:\n${resetUrl}\n\nFor your security, this link expires in exactly 5 minutes and can only be used once.\n\nIf you did not request a password reset, you can safely ignore this email.`;
+  const text = `Hello ${fullName || 'Athlete'},\n\nWe received a request to reset your Keeper Sport LB password.\nClick the link below to choose a new password:\n${resetUrl}\n\nFor your security, this link expires in exactly 5 minutes and can only be used once.\n\nIf you did not request a password reset, you can safely ignore this email.`;
 
   try {
     const { data, error } = await resend.emails.send({
       from: getSenderEmail(),
       to: email,
-      subject: "Reset your Keeper Sports password",
+      subject: "Reset your Keeper Sport LB password",
       html,
       text
     });
