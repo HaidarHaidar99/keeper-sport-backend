@@ -194,6 +194,13 @@ const requireAdmin = async (req, res, next) => {
       });
     }
 
+    if (!user.is_verified && user.role !== "super_admin") {
+      return res.status(403).json({
+        success: false,
+        message: "Administrator account is not active yet. Please verify your email address first."
+      });
+    }
+
     req.user = user;
     next();
   } catch (err) {

@@ -1,8 +1,10 @@
 const crypto = require("crypto");
+const bcrypt = require("bcryptjs");
 const supabase = require("../config/supabase");
 const { getCategoryImagesMap, setCategoryImage, removeCategoryImage } = require("../utils/categoryStorage");
 const { getSiteContent, updateSiteContent } = require("../utils/siteContentStorage");
 const { clearContentCache } = require("./contentController");
+const { sendAdminVerificationEmail } = require("../utils/emailService");
 
 const BUCKET_NAME = "keeper-media";
 
@@ -1596,6 +1598,188 @@ const getUsersAdmin = async (req, res) => {
 };
 
 /**
+ * POST /api/admin/users/create-admin
+ * Super Admin ONLY: Create a new administrator account and send an email verification link.
+ * The new administrator account remains inactive (is_verified = false) until verified.
+ */
+const createAdminAccount = async (req, res) => {
+  try {
+    if (req.user?.role !== "super_admin") {
+      return res.status(403).json({
+        success: false,
+        message: "Forbidden: Only Super Administrators can add new administrators."
+      });
+    }
+
+    const { full_name, email, password } = req.body || {};
+    const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+    if (!full_name || typeof full_name !== "string" || full_name.trim().length < 2) {
+      return res.status(400).json({
+        success: false,
+        message: "Full name is required (at least 2 characters)."
+      });
+    }
+
+    if (!email || typeof email !== "string" || !EMAIL_REGEX.test(email.trim())) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid email address is required."
+      });
+    }
+
+    if (!password || typeof password !== "string" || password.length < 8) {
+      return res.status(400).json({
+        success: false,
+        message: "Password must be at least 8 characters long."
+      });
+    }
+
+    if (password.length > 128) {
+      return res.status(400).json({
+        success: false,
+        message: "Password cannot exceed 128 characters."
+      });
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+
+    const { data: existingUser, error: findErr } = await supabase
+      .from("users")
+      .select("id, email")
+      .eq("email", normalizedEmail)
+      .maybeSingle();
+
+    if (findErr) throw findErr;
+
+    if (existingUser) {
+      return res.status(409).json({
+        success: false,
+        message: "An account with this email address already exists."
+      });
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    const password_hash = await bcrypt.hash(password, salt);
+
+    // Generate secure 24-hour verification token
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+
+    const { data: newAdmin, error: insertErr } = await supabase
+      .from("users")
+      .insert({
+        full_name: full_name.trim(),
+        email: normalizedEmail,
+        password_hash,
+        role: "admin",
+        auth_provider: "local",
+        google_id: null,
+        is_verified: false,
+        verification_token_hash: tokenHash,
+        verification_token_expires_at: expiresAt
+      })
+      .select("id, full_name, email, role, auth_provider, is_verified, created_at, updated_at")
+      .single();
+
+    if (insertErr) throw insertErr;
+
+    const emailResult = await sendAdminVerificationEmail({
+      email: normalizedEmail,
+      fullName: full_name.trim(),
+      rawToken,
+      invitedBy: req.user.full_name || req.user.email
+    });
+
+    return res.status(201).json({
+      success: true,
+      emailSent: Boolean(emailResult?.success),
+      message: emailResult?.success
+        ? `Administrator added. A verification link has been sent to ${normalizedEmail} — the account will activate once verified.`
+        : `Administrator created, but verification email could not be sent (${emailResult?.error || "check email configuration"}).`,
+      user: newAdmin
+    });
+  } catch (err) {
+    console.error("createAdminAccount error:", err);
+    return res.status(500).json({
+      success: false,
+      message: err.message || "Failed to create administrator account."
+    });
+  }
+};
+
+/**
+ * POST /api/admin/users/:id/resend-verification
+ * Super Admin ONLY: Resend verification link to an unverified administrator account
+ */
+const resendAdminVerification = async (req, res) => {
+  try {
+    if (req.user?.role !== "super_admin") {
+      return res.status(403).json({
+        success: false,
+        message: "Forbidden: Only Super Administrators can resend administrator verification links."
+      });
+    }
+
+    const { id } = req.params;
+    const { data: targetUser, error: findErr } = await supabase
+      .from("users")
+      .select("id, full_name, email, role, is_verified, auth_provider")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (findErr) throw findErr;
+    if (!targetUser) {
+      return res.status(404).json({ success: false, message: "User account not found." });
+    }
+    if (targetUser.is_verified) {
+      return res.json({ success: true, already_verified: true, message: "This account is already verified and active." });
+    }
+
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+
+    const emailResult = await sendAdminVerificationEmail({
+      email: targetUser.email,
+      fullName: targetUser.full_name,
+      rawToken,
+      invitedBy: req.user.full_name || req.user.email
+    });
+
+    if (!emailResult?.success) {
+      return res.status(500).json({
+        success: false,
+        message: emailResult?.error || "Failed to send verification email."
+      });
+    }
+
+    const { error: updErr } = await supabase
+      .from("users")
+      .update({
+        verification_token_hash: tokenHash,
+        verification_token_expires_at: expiresAt,
+        updated_at: new Date().toISOString()
+      })
+      .eq("id", targetUser.id);
+
+    if (updErr) throw updErr;
+
+    return res.json({
+      success: true,
+      message: `Verification link resent to ${targetUser.email}.`
+    });
+  } catch (err) {
+    console.error("resendAdminVerification error:", err);
+    return res.status(500).json({
+      success: false,
+      message: err.message || "Failed to resend verification email."
+    });
+  }
+};
+
+/**
  * PATCH /api/admin/users/:id/role
  */
 const updateUserRole = async (req, res) => {
@@ -1610,6 +1794,17 @@ const updateUserRole = async (req, res) => {
     // Safeguard: Current user cannot change own role
     if (req.user.id === id) {
       return res.status(400).json({ success: false, message: "Cannot modify your own administrator role." });
+    }
+
+    // Safeguard: Prevent modifying a super_admin's role
+    const { data: targetUser } = await supabase
+      .from("users")
+      .select("id, role")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (targetUser?.role === "super_admin") {
+      return res.status(403).json({ success: false, message: "Cannot modify a Super Administrator's role." });
     }
 
     const { data, error } = await supabase
@@ -2371,6 +2566,8 @@ module.exports = {
   deleteOrderAdmin,
   // Users
   getUsersAdmin,
+  createAdminAccount,
+  resendAdminVerification,
   updateUserRole,
   // Reviews
   getReviewsAdmin,

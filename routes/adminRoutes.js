@@ -67,6 +67,8 @@ router.delete("/orders/:id", adminController.deleteOrderAdmin);
 
 // Users
 router.get("/users", adminController.getUsersAdmin);
+router.post("/users/create-admin", adminController.createAdminAccount);
+router.post("/users/:id/resend-verification", adminController.resendAdminVerification);
 router.patch("/users/:id/role", adminController.updateUserRole);
 
 // Reviews

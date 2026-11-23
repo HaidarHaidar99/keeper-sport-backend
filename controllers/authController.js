@@ -269,7 +269,7 @@ const verifyEmail = async (req, res) => {
 
     const { data: user, error } = await supabase
       .from("users")
-      .select("id, email, full_name, is_verified, verification_token_expires_at")
+      .select("id, email, full_name, role, is_verified, verification_token_expires_at")
       .eq("verification_token_hash", tokenHash)
       .maybeSingle();
 
@@ -288,11 +288,16 @@ const verifyEmail = async (req, res) => {
       });
     }
 
+    const isAdminAccount = user.role === "admin" || user.role === "super_admin";
+
     if (user.is_verified) {
       return res.json({
         success: true,
         already_verified: true,
-        message: "Your email is already verified. You can sign in now."
+        role: user.role,
+        message: isAdminAccount
+          ? "Your administrator account is already verified and active. You can sign in to the Admin Panel now."
+          : "Your email is already verified. You can sign in now."
       });
     }
 
@@ -301,7 +306,10 @@ const verifyEmail = async (req, res) => {
         success: false,
         expired: true,
         email: user.email,
-        message: "This verification link has expired (5-minute limit). Please request a new one."
+        role: user.role,
+        message: isAdminAccount
+          ? "This administrator verification link has expired. Please request a new verification link below or ask your Super Admin to resend it."
+          : "This verification link has expired (5-minute limit). Please request a new one."
       });
     }
 
@@ -329,7 +337,10 @@ const verifyEmail = async (req, res) => {
 
     return res.json({
       success: true,
-      message: "Email verified successfully! You can now sign in to your account."
+      role: user.role,
+      message: isAdminAccount
+        ? "Email verified! Your administrator account is now active. You can sign in to the Admin Panel."
+        : "Email verified successfully! You can now sign in to your account."
     });
   } catch (err) {
     console.error("Verify email error:", err);
@@ -1007,6 +1018,16 @@ const adminLogin = async (req, res) => {
       return res.status(401).json({
         success: false,
         message: "Invalid administrator credentials."
+      });
+    }
+
+    // 3b. Enforce email verification before administrator account is active
+    if (!user.is_verified && user.role !== "super_admin") {
+      return res.status(403).json({
+        success: false,
+        requires_verification: true,
+        email: user.email,
+        message: "This administrator account is pending email verification. Please click the verification link sent to your email to activate your account."
       });
     }
 

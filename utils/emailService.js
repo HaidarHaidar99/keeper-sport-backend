@@ -231,8 +231,80 @@ const sendPasswordResetEmail = async ({ email, fullName, rawToken }) => {
   }
 };
 
+/**
+ * Send Administrator Invitation & Email Verification link
+ * Expiration: 24 hours
+ */
+const sendAdminVerificationEmail = async ({ email, fullName, rawToken, invitedBy }) => {
+  const frontendUrl = getFrontendUrl();
+  const verifyUrl = `${frontendUrl}/verify-email?token=${encodeURIComponent(rawToken)}`;
+  const resend = getResendClient();
+
+  if (!resend) {
+    console.warn(`[EmailService] RESEND_API_KEY is not configured. Admin verification email skipped.`);
+    return {
+      success: false,
+      reason: "RESEND_API_KEY_NOT_CONFIGURED",
+      error: "RESEND_API_KEY is not configured on the server."
+    };
+  }
+
+  const inviterLine = invitedBy
+    ? `<strong>${invitedBy}</strong> has added you as an Administrator on Keeper Sport LB.`
+    : `You have been added as an Administrator on Keeper Sport LB.`;
+
+  const html = renderEmailTemplate({
+    title: "Activate your Administrator account",
+    subtitle: `Welcome to the Keeper Sport LB team, ${fullName || 'Administrator'}.`,
+    contentHtml: `
+      <p style="margin: 0 0 16px 0;">
+        ${inviterLine} To activate your administrator account and gain access to the Admin Panel, please verify your email address below.
+      </p>
+      <div style="background-color: #17181f; border-left: 3px solid #E10600; padding: 12px 16px; margin: 0 0 16px 0; font-size: 13px; color: #e5e7eb;">
+        <strong>Important:</strong> Your administrator account remains inactive until you click the verification button below. This secure activation link expires in <strong>24 hours</strong>.
+      </div>
+      <p style="margin: 0; color: #9ca3af; font-size: 13px;">
+        Once verified, you can sign in to the Admin Panel using your email and the password provided by your Super Administrator.
+      </p>
+    `,
+    buttonText: "Verify & Activate Admin Account",
+    buttonUrl: verifyUrl
+  });
+
+  const text = `Welcome to Keeper Sport LB, ${fullName || 'Administrator'}!\n\nYou have been added as an Administrator on Keeper Sport LB.\nPlease verify your email address to activate your account:\n${verifyUrl}\n\nThis activation link expires in 24 hours. Your account will become active immediately after verification.`;
+
+  try {
+    const { data, error } = await resend.emails.send({
+      from: getSenderEmail(),
+      to: email,
+      subject: "Verify & Activate your Keeper Sport LB Administrator Account",
+      html,
+      text
+    });
+
+    if (error) {
+      console.error(`[EmailService] Resend API error for admin verification email:`, error.message);
+      return { success: false, error: error.message };
+    }
+
+    if (!data || !data.id) {
+      return { success: false, error: "Provider did not return message id." };
+    }
+
+    return {
+      success: true,
+      messageId: data.id,
+      accepted: true
+    };
+  } catch (err) {
+    console.error(`[EmailService] Failed to send admin verification email:`, err.message);
+    return { success: false, error: err.message };
+  }
+};
+
 module.exports = {
   sendVerificationEmail,
+  sendAdminVerificationEmail,
   sendPasswordResetEmail,
   getFrontendUrl,
   getSenderEmail,
