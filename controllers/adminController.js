@@ -45,22 +45,18 @@ const slugify = (text) => {
  */
 const getDashboardOverview = async (req, res) => {
   try {
-    // Standard low stock threshold constant
-    const lowStockThreshold = 5;
-
     // Run parallel count and aggregate queries
     const [
       usersCountRes,
       ordersCountRes,
       productsCountRes,
       activeProductsRes,
-      lowStockProductsRes,
       outOfStockProductsRes,
       unreadNotifRes,
       reviewsCountRes,
       recentOrdersRes,
       recentUsersRes,
-      lowStockItemsRes,
+      outOfStockItemsRes,
       recentNotifsRes,
       unreadFormsRes
     ] = await Promise.all([
@@ -72,9 +68,7 @@ const getDashboardOverview = async (req, res) => {
       supabase.from("products").select("id", { count: "exact", head: true }),
       // Active Products
       supabase.from("products").select("id", { count: "exact", head: true }).eq("is_active", true),
-      // Low Stock Products
-      supabase.from("products").select("id", { count: "exact", head: true }).eq("is_active", true).gt("stock_quantity", 0).lte("stock_quantity", lowStockThreshold),
-      // Out of Stock Products
+      // Out of Stock Products (only quantity === 0)
       supabase.from("products").select("id", { count: "exact", head: true }).eq("is_active", true).lte("stock_quantity", 0),
       // Unread Admin Notifications
       supabase.from("notifications").select("id", { count: "exact", head: true }).eq("recipient_type", "admin").neq("type", "system").eq("is_read", false),
@@ -84,8 +78,8 @@ const getDashboardOverview = async (req, res) => {
       supabase.from("orders").select("id, order_number, customer_full_name, total, status, payment_method, created_at").order("created_at", { ascending: false }).limit(5),
       // Recent Users (limit 5)
       supabase.from("users").select("id, full_name, email, role, is_verified, created_at").order("created_at", { ascending: false }).limit(5),
-      // Low stock product items
-      supabase.from("products").select("id, name, slug, stock_quantity, base_price, is_active").lte("stock_quantity", lowStockThreshold).order("stock_quantity", { ascending: true }).limit(6),
+      // Out of stock product items (only quantity === 0)
+      supabase.from("products").select("id, name, slug, stock_quantity, base_price, is_active").lte("stock_quantity", 0).order("updated_at", { ascending: false }).limit(6),
       // Recent notifications (limit 5)
       supabase.from("notifications").select("id, title, message, type, is_read, created_at").eq("recipient_type", "admin").neq("type", "system").order("created_at", { ascending: false }).limit(5),
       // Unread contact form notifications
@@ -99,16 +93,16 @@ const getDashboardOverview = async (req, res) => {
         totalOrders: ordersCountRes.count || 0,
         totalProducts: productsCountRes.count || 0,
         activeProducts: activeProductsRes.count || 0,
-        lowStockProducts: lowStockProductsRes.count || 0,
+        lowStockProducts: 0,
         outOfStockProducts: outOfStockProductsRes.count || 0,
         unreadNotifications: unreadNotifRes.count || 0,
         unreadForms: unreadFormsRes.count || 0,
-        totalReviews: reviewsCountRes.count || 0,
-        lowStockThreshold
+        totalReviews: reviewsCountRes.count || 0
       },
       recentOrders: recentOrdersRes.data || [],
       recentUsers: recentUsersRes.data || [],
-      lowStockItems: lowStockItemsRes.data || [],
+      outOfStockItems: outOfStockItemsRes.data || [],
+      lowStockItems: outOfStockItemsRes.data || [],
       recentNotifications: recentNotifsRes.data || []
     });
   } catch (err) {
@@ -569,13 +563,10 @@ const updateSiteSettingsAdmin = async (req, res) => {
  */
 const getProductsOverview = async (req, res) => {
   try {
-    const lowStockThreshold = 5;
-
-    const [totalRes, activeRes, outRes, lowRes, featuredRes] = await Promise.all([
+    const [totalRes, activeRes, outRes, featuredRes] = await Promise.all([
       supabase.from("products").select("id", { count: "exact", head: true }),
       supabase.from("products").select("id", { count: "exact", head: true }).eq("is_active", true),
       supabase.from("products").select("id", { count: "exact", head: true }).lte("stock_quantity", 0),
-      supabase.from("products").select("id", { count: "exact", head: true }).gt("stock_quantity", 0).lte("stock_quantity", lowStockThreshold),
       supabase.from("products").select("id", { count: "exact", head: true }).eq("is_featured", true)
     ]);
 
@@ -585,9 +576,8 @@ const getProductsOverview = async (req, res) => {
         total: totalRes.count || 0,
         active: activeRes.count || 0,
         outOfStock: outRes.count || 0,
-        lowStock: lowRes.count || 0,
-        featured: featuredRes.count || 0,
-        lowStockThreshold
+        lowStock: 0,
+        featured: featuredRes.count || 0
       }
     });
   } catch (err) {
@@ -673,7 +663,7 @@ const getProductsAdmin = async (req, res) => {
       ...p,
       categoryName: p.categories?.name || "Uncategorized",
       primaryImage: mediaMap.get(p.id) || null,
-      isLowStock: p.stock_quantity > 0 && p.stock_quantity <= lowStockThreshold,
+      isLowStock: false,
       isOutOfStock: p.stock_quantity <= 0
     }));
 

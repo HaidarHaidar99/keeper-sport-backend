@@ -275,8 +275,9 @@ const getUserCounts = async (req, res) => {
       const [favRes, ordersRes, cartRes, notifRes] = await Promise.all([
         supabase
           .from("favorites")
-          .select("id", { count: "exact", head: true })
-          .eq("user_id", userId),
+          .select("id, products!inner(id)", { count: "exact", head: true })
+          .eq("user_id", userId)
+          .eq("products.is_active", true),
 
         supabase
           .from("orders")
@@ -333,8 +334,9 @@ const getUserCounts = async (req, res) => {
     const [favRes, ordersRes, cartRes] = await Promise.all([
       supabase
         .from("favorites")
-        .select("id", { count: "exact", head: true })
-        .eq("guest_identifier", guestIdentifier),
+        .select("id, products!inner(id)", { count: "exact", head: true })
+        .eq("guest_identifier", guestIdentifier)
+        .eq("products.is_active", true),
 
       (async () => {
         if (tokenHashes.length === 0) return 0;

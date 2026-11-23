@@ -311,12 +311,7 @@ const getProducts = async (req, res) => {
       const categoryObj = categoriesMap.get(p.category_id) || null;
 
       const stockQty = p.stock_quantity || 0;
-      let stockStatus = "in_stock";
-      if (stockQty <= 0) {
-        stockStatus = "out_of_stock";
-      } else if (stockQty <= lowStockThreshold) {
-        stockStatus = "low_stock";
-      }
+      const stockStatus = stockQty <= 0 ? "out_of_stock" : "in_stock";
 
       return {
         id: p.id,
@@ -332,7 +327,7 @@ const getProducts = async (req, res) => {
         stock: {
           quantity: stockQty,
           status: stockStatus,
-          isLowStock: stockStatus === "low_stock",
+          isLowStock: false,
           isOutOfStock: stockStatus === "out_of_stock"
         },
         rating: {
@@ -531,9 +526,7 @@ const getFeaturedProducts = async (req, res) => {
       const categoryObj = categoriesMap.get(p.category_id) || null;
 
       const stockQty = p.stock_quantity || 0;
-      let stockStatus = "in_stock";
-      if (stockQty <= 0) stockStatus = "out_of_stock";
-      else if (stockQty <= lowStockThreshold) stockStatus = "low_stock";
+      const stockStatus = stockQty <= 0 ? "out_of_stock" : "in_stock";
 
       return {
         id: p.id,
@@ -549,7 +542,7 @@ const getFeaturedProducts = async (req, res) => {
         stock: {
           quantity: stockQty,
           status: stockStatus,
-          isLowStock: stockStatus === "low_stock",
+          isLowStock: false,
           isOutOfStock: stockStatus === "out_of_stock"
         },
         rating: {
@@ -630,13 +623,10 @@ const getProductBySlugOrId = async (req, res) => {
       favPromise
     ]);
 
-    const lowStockThreshold = 5;
     const pricing = computeProductPricing(product);
 
     const stockQty = product.stock_quantity || 0;
-    let stockStatus = "in_stock";
-    if (stockQty <= 0) stockStatus = "out_of_stock";
-    else if (stockQty <= lowStockThreshold) stockStatus = "low_stock";
+    const stockStatus = stockQty <= 0 ? "out_of_stock" : "in_stock";
 
     return res.json({
       success: true,
@@ -650,7 +640,7 @@ const getProductBySlugOrId = async (req, res) => {
         stock: {
           quantity: stockQty,
           status: stockStatus,
-          isLowStock: stockStatus === "low_stock",
+          isLowStock: false,
           isOutOfStock: stockStatus === "out_of_stock"
         },
         rating: {
